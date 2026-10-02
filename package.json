@@ -28,20 +28,32 @@
   "exports": {
     ".": "./src/api.mjs",
     "./macho": "./src/macho.mjs",
+    "./fixtures": "./test/fixtures.mjs",
     "./package.json": "./package.json"
   },
   "types": "src/api.d.ts",
   "files": [
     "src",
+    "test/fixtures.mjs",
+    "test/fixtures",
+    "man",
+    "completions",
     "config.json",
     "COPYING",
     "LICENSE",
     "README.md"
   ],
+  "man": [
+    "man/man1/macho-describe.1",
+    "man/man1/macho-sym.1",
+    "man/man1/macho-symlookup.1",
+    "man/man1/macho-findcall.1",
+    "man/man1/macho-findliteral.1",
+    "man/man1/macho-mapliteral.1"
+  ],
   "bin": {
     "macho-describe": "src/describe.mjs",
-    "macho-symgrep": "src/symgrep.mjs",
-    "macho-symfind": "src/symfind.mjs",
+    "macho-sym": "src/sym.mjs",
     "macho-symlookup": "src/symlookup.mjs",
     "macho-findcall": "src/findcall.mjs",
     "macho-findliteral": "src/findliteral.mjs",

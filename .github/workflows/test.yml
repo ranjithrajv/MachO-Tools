@@ -20,6 +20,12 @@ name: test
 
 on:
   push:
+    # `main`, because this package is published as its own repository — the
+    # standalone clone a reviewer gets from the npm page or the GitHub link has
+    # `main`, and a trigger naming a branch that does not exist there is a
+    # workflow that never runs, which looks identical to one that passes. The
+    # workspace this was extracted from uses `master`; see the root ci.yml, whose
+    # trigger is `master` for the mirror reason.
     branches: [main]
   pull_request:
   workflow_dispatch:

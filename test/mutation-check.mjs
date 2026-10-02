@@ -127,8 +127,13 @@ const MUTATIONS = [
   {
     name: 'a section scan skips the slice base on a fat binary',
     file: 'src/api.mjs',
-    find: `      for (const sec of pool.sections) sliceScanned += tallySection(f, sec, enc, counts, s.offset);`,
-    replace: `      for (const sec of pool.sections) sliceScanned += tallySection(f, sec, enc, counts, 0); // MUTATED: no slice base`,
+    // The 6th argument is the `mapped` gate, added after this mutation was
+    // written. The anchor was left at the 5-argument form, so the mutation
+    // stopped applying — silently, because an inconclusive mutation exits 0.
+    // The defect being reintroduced is unchanged and is still only the slice
+    // base: drop `s.offset`, keep the predicate.
+    find: `      for (const sec of pool.sections) sliceScanned += tallySection(f, sec, enc, counts, s.offset, mapped);`,
+    replace: `      for (const sec of pool.sections) sliceScanned += tallySection(f, sec, enc, counts, 0, mapped); // MUTATED: no slice base`,
     expect: /resolves real call sites|finds at least one destination|positive control/,
   },
 ];
@@ -233,6 +238,13 @@ if (failed.length) {
   for (const f of failed) console.log(`  - ${f}`);
   process.exit(1);
 }
+// Inconclusive used to be a warning and this used to fall through to the green
+// summary below, so a stale anchor quietly reduced the mutation count and the
+// run still reported "none surviving" — the confident green this file exists to
+// prevent, reached a third way. A mutation that could not be applied is a hole
+// in the guarantee, so it fails here like a survivor does, and the count line is
+// only printed when every mutation actually ran and was caught.
+if (inconclusive.length) process.exit(1);
 console.log(
   `${pass} mutation(s) caught, none surviving: ` +
     `${byLayer.fixtures} by the fixture generator's self-check, ${byLayer.suite} by smoke.mjs.`,

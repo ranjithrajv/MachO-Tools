@@ -1,0 +1,158 @@
+.TH MACHO\-SYM 1 "October 2, 2026" "MachO-Tools 0.1.0" "User Commands"
+.SH NAME
+macho\-sym \- search a Mach\-O symbol table
+.SH SYNOPSIS
+.B macho\-sym
+.I pattern
+.RI [ binary | bundle ]
+.RI [ max ]
+.RB [ \-\-regex ]
+.RB [ \-\-case\-sensitive ]
+.RB [ \-\-all\-imp ]
+.RB [ \-\-no\-dedupe ]
+.RB [ \-\-arch= name ]
+.RB [ \-b | \-\-binary
+.IR path ]
+.RB [ \-\-json ]
+.RB [ \-h | \-\-help ]
+.SH DESCRIPTION
+Searches the symbol table of one slice of a Mach\-O file and prints the
+matching symbols with their virtual addresses.
+.PP
+The pattern is matched as a plain substring by default, or as a regular
+expression with
+.BR \-\-regex .
+Substring is the default because a symbol name is usually known without its
+exact spelling, and a pattern that fails to compile as a regex is a worse
+failure than one that matches more than intended.
+.PP
+Imported symbols are excluded unless
+.B \-\-all\-imp
+is given. An imported name carries no address and no implementation, so it does
+not answer "where is this implemented"; with
+.B \-\-all\-imp
+such names are included and marked
+.B (import)
+rather than printed as
+.BR 0x0 ,
+because a bare zero reads as "defined at address zero".
+.PP
+One row is printed per distinct name unless
+.B \-\-no\-dedupe
+is given. A symbol table routinely carries one name at several addresses
+(aliases, thunks, per\-architecture copies), and a list where
+.B memcpy
+appears nine times is harder to read than one where it appears once.
+.SH OPTIONS
+.TP
+.BI \-\-arch= name
+Prefer one architecture,
+.B x86_64
+or
+.BR arm64 .
+This is a preference, not a requirement: an architecture that is absent falls
+back to the richest slice rather than failing.
+.TP
+.BR \-b ", " \-\-binary " " \fIpath\fR
+The binary to read, for use when every positional argument is part of the
+query.
+.TP
+.BR \-\-case\-sensitive
+Match case exactly. Without it, matching is case\-insensitive.
+.TP
+.B \-\-json
+Write one JSON object to standard output and send all prose to standard error,
+so that output can be piped into a parser without reading diagnostics as data.
+Addresses are rendered as
+.B "0x..."
+strings: a 64\-bit virtual address does not survive a JSON number.
+.TP
+.B \-\-no\-dedupe
+Print one row per symbol table entry rather than one per distinct name.
+.TP
+.I max
+Cap on the number of rows, when deduplicating. The default is 4000.
+.SH ENVIRONMENT
+.TP
+.B MACHO_BINARY
+The binary to read when none is given on the command line.
+.TP
+.B MACHO_APP
+An application bundle to read, tried after
+.BR MACHO_BINARY .
+.TP
+.B MACHO_CONFIG
+Path to a replacement
+.IR config.json .
+.SH EXIT STATUS
+.TP
+.B 0
+At least one match.
+.TP
+.B 1
+The tool ran and found nothing. This is deliberately distinct from failure: a
+caller that treats "no matches" as an error treats a working tool as broken.
+.TP
+.B 2
+Usage error.
+.TP
+.B 3
+The file could not be read, or the chosen slice has no symbol table.
+.SH EXAMPLES
+Find a symbol by substring:
+.PP
+.RS
+.nf
+macho\-sym runtime.main /usr/local/go/bin/go
+.fi
+.RE
+.PP
+Search with a regular expression:
+.PP
+.RS
+.nf
+macho\-sym \-\-regex 'runtime\..*main' /usr/local/go/bin/go
+.fi
+.RE
+.PP
+Count matches without reading the human\-readable report:
+.PP
+.RS
+.nf
+macho\-sym \-\-json compress /usr/bin/ssh | jq '.count'
+.fi
+.RE
+.PP
+Include imported names, one row per entry:
+.PP
+.RS
+.nf
+macho\-sym \-\-all\-imp \-\-no\-dedupe memcpy /usr/bin/ssh
+.fi
+.RE
+.SH NOTES
+This tool was previously two, called
+.B macho\-symgrep
+(regex, defined symbols only, one row per entry) and
+.B macho\-symfind
+(substring, imports included, deduplicated). Both were removed in 0.1.0 rather
+than kept as aliases. The equivalent invocations are
+.B macho\-sym \-\-regex
+and
+.BR "macho\-sym \-\-all\-imp" .
+.PP
+A stripped binary has no symbol names to search. This tool then reports no
+matches rather than guessing;
+.BR macho\-symlookup (1)
+and
+.BR macho\-findcall (1)
+read addresses and bytes instead and still work.
+.SH SEE ALSO
+.BR macho\-describe (1),
+.BR macho\-symlookup (1),
+.BR macho\-findcall (1),
+.BR macho\-findliteral (1),
+.BR macho\-mapliteral (1),
+.BR otool (1),
+.BR nm (1),
+.BR lipo (1)

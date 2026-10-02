@@ -255,37 +255,40 @@ export declare function describe(path: string): {
   }>;
 };
 
-/** Regex over a slice's symbol table. `definedOnly` defaults to true. */
-export declare function grepSymbols(
+/**
+ * Search a symbol table by substring or regex, with one coherent set of rules.
+ *
+ * This replaced two narrower functions: `grepSymbols` (regex, defined-only, one
+ * row per entry) and `findSymbols` (substring, imports included, deduplicated by
+ * name). Both were removed rather than aliased — the merged rules above are the
+ * only symbol-search contract, which is the point of the merge.
+ */
+export declare function searchSymbols(
   path: string,
   pattern: string,
-  opts?: { arch?: string; flags?: string; definedOnly?: boolean },
+  opts?: {
+    arch?: string;
+    mode?: 'substring' | 'regex';
+    flags?: string;
+    definedOnly?: boolean;
+    dedupe?: boolean;
+    max?: number;
+  },
 ): {
   arch: string;
   pattern: string;
-  flags: string;
+  mode: 'substring' | 'regex';
+  /** Regex flags actually applied; `null` in substring mode, where none are. */
+  flags: string | null;
   matches: SymbolEntry[];
-  defined: number;
-  total: number;
-  note: string | null;
-};
-
-/**
- * Substring over a symbol table, deduplicated and address-ordered.
- *
- * `unique: false` returns one entry per address instead of one per name.
- */
-export declare function findSymbols(
-  path: string,
-  substring: string,
-  opts?: { arch?: string; max?: number; unique?: boolean },
-): {
-  arch: string;
-  substring: string;
-  matches: SymbolEntry[];
+  /** Matches before deduplication and the row cap. */
   count: number;
+  /** Distinct names among the matches. */
   uniqueCount: number;
+  /** True when `max` dropped rows. */
   truncated: boolean;
+  deduped: boolean;
+  definedOnly: boolean;
   defined: number;
   total: number;
   note: string | null;

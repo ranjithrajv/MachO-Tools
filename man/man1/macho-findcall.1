@@ -1,0 +1,114 @@
+.TH MACHO\-FINDCALL 1 "October 2, 2026" "MachO-Tools 0.1.0" "User Commands"
+.SH NAME
+macho\-findcall \- find direct call sites and call targets in a Mach\-O
+.SH SYNOPSIS
+.B macho\-findcall
+.I hex-vaddr
+.RI [ binary | bundle ]
+.RB [ \-\-json ]
+.RB [ \-\-arch= name ]
+.RB [ \-b | \-\-binary
+.IR path ]
+.RB [ \-\-include\-data ]
+.br
+.B macho\-findcall \-\-list
+.RI [ binary | bundle ]
+.RI [ max ]
+.RB [ \-\-json ]
+.RB [ \-\-include\-data ]
+.SH DESCRIPTION
+Reports the direct
+.B call
+and
+.B jmp
+sites in a Mach\-O that resolve to a given virtual address, or with
+.B \-\-list
+the distinct addresses the binary calls directly.
+.PP
+Both x86_64
+.B rel32
+and arm64
+.B BL
+encodings are decoded. An architecture whose encoding is not implemented is
+named in an
+.B unsupported
+list rather than silently reporting nothing.
+.SH OPTIONS
+.TP
+.BI \-\-arch= name
+Restrict to one architecture. A preference, not a requirement.
+.TP
+.BR \-b ", " \-\-binary " " \fIpath\fR
+The binary to read.
+.TP
+.B \-\-include\-data
+Widen the scan from sections whose attributes mark them as instructions to
+every non\-empty section. This reports more sites, including some that are data
+decoding as an instruction; see
+.BR DIAGNOSTICS .
+.TP
+.B \-\-json
+Write one JSON object to standard output and send the per\-slice narration to
+standard error.
+.TP
+.I max
+With
+.BR \-\-list ,
+the number of distinct targets to report.
+.SH ENVIRONMENT
+.TP
+.B MACHO_BINARY
+The binary to read when none is given on the command line.
+.TP
+.B MACHO_APP
+An application bundle to read, tried after
+.BR MACHO_BINARY .
+.TP
+.B MACHO_CONFIG
+Path to a replacement
+.IR config.json .
+.SH EXIT STATUS
+.TP
+.B 0
+At least one call site was found.
+.TP
+.B 1
+The tool ran and found nothing.
+.TP
+.B 2
+Usage error.
+.TP
+.B 3
+The file could not be read, or no slice could be scanned.
+.SH DIAGNOSTICS
+Every hit is a site
+.I worth
+disassembling, not a proven call\-graph edge.
+.PP
+Only
+.I direct
+calls appear. An indirect call, a register call or a jump through a PLT stub
+does not encode its target in the instruction, so this tool cannot see it. This
+is the largest gap against a real disassembler and the reason these tools hand
+work to one rather than replace it.
+.PP
+The arm64 scan steps four bytes at a time and therefore sees aligned
+.B BL
+instructions only; an instruction at an unaligned address is missed.
+.PP
+By default only sections marked as instructions are scanned. If a slice marks no
+section as instructions at all, every non\-empty section is scanned instead and
+the result reports that it fell back, because reporting zero call sites for an
+unusual input is worse than an untyped scan.
+.SH EXAMPLES
+.RS
+.nf
+macho\-findcall 0x100085c30 /usr/local/go/bin/go
+macho\-findcall \-\-list /usr/local/go/bin/go 20
+.fi
+.RE
+.SH SEE ALSO
+.BR macho\-sym (1),
+.BR macho\-symlookup (1),
+.BR macho\-describe (1),
+.BR otool (1)

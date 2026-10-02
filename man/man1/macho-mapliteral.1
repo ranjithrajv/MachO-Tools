@@ -1,0 +1,83 @@
+.TH MACHO\-MAPLITERAL 1 "October 2, 2026" "MachO-Tools 0.1.0" "User Commands"
+.SH NAME
+macho\-mapliteral \- map a byte literal to addresses, then find pointers to them
+.SH SYNOPSIS
+.B macho\-mapliteral
+.I literal
+.RI [ binary | bundle ]
+.RI [ file-offset ...]
+.RB [ \-\-json ]
+.RB [ \-b | \-\-binary
+.IR path ]
+.RB [ \-h | \-\-help ]
+.SH DESCRIPTION
+Finds each occurrence of a byte literal, maps the occurrence's file offset to
+the virtual address the loader will place it at, and then searches the file for
+pointers to that address.
+.PP
+This is the step that turns a format magic into the code that handles it: the
+literal is the format, the pointer table beside it is the dispatch, and the
+address the literal maps to is what those pointers refer to.
+.PP
+The literal search is per slice and the pointer search is whole\-file, so a
+pointer may be reported in a slice other than the one whose literal was mapped.
+.SH OPTIONS
+.TP
+.BR \-b ", " \-\-binary " " \fIpath\fR
+The binary to read.
+.TP
+.B \-\-json
+Write one JSON object to standard output and send prose to standard error.
+Addresses are rendered as
+.B "0x..."
+strings rather than numbers.
+.TP
+.I file-offset
+One or more absolute file offsets to map instead of searching for the literal.
+Use this for a magic that is assembled at runtime and therefore never appears
+whole in the file. Offsets are absolute, as reported by
+.BR macho\-findliteral (1).
+.SH ENVIRONMENT
+.TP
+.B MACHO_BINARY
+The binary to read when none is given on the command line.
+.TP
+.B MACHO_APP
+An application bundle to read, tried after
+.BR MACHO_BINARY .
+.TP
+.B MACHO_CONFIG
+Path to a replacement
+.IR config.json .
+.SH EXIT STATUS
+.TP
+.B 0
+The literal was located and mapped.
+.TP
+.B 1
+The tool ran and the literal was not present.
+.TP
+.B 2
+Usage error, including a non\-numeric file offset.
+.TP
+.B 3
+The file could not be read.
+.SH EXAMPLES
+.RS
+.nf
+macho\-mapliteral LZ4 "/Applications/Some App.app"
+macho\-mapliteral \\x1f\\x8b \-\-json /usr/bin/ssh | jq '.data.locations[].pointers'
+.fi
+.RE
+.PP
+Mapping offsets you already have:
+.PP
+.RS
+.nf
+macho\-mapliteral irrelevant 0x3f8a0 /usr/bin/ssh
+.fi
+.RE
+.SH SEE ALSO
+.BR macho\-findliteral (1),
+.BR macho\-findcall (1),
+.BR macho\-symlookup (1)

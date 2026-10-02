@@ -1,0 +1,26 @@
+#compdef macho-sym
+#
+# zsh completion for macho-sym. Install as _macho-sym in a directory on your
+# $fpath, or copy to ${fpath[1]}/_macho-sym.
+#
+# MachO-Tools 0.1.0.
+
+_macho_arches=(x86_64 arm64)
+
+_macho_sym() {
+    _arguments -s -S \
+        '--regex[match pattern as a regular expression]' \
+        '--case-sensitive[match case exactly]' \
+        '--all-imp[include imported symbols, not just defined ones]' \
+        '--no-dedupe[one row per symbol table entry rather than per name]' \
+        '--arch=[prefer an architecture]:architecture:(x86_64 arm64)' \
+        '(-b --binary)'{-b,--binary}'[the binary or bundle to read]:Mach-O file or bundle:_files' \
+        '--json[write one JSON object to stdout]' \
+        '(-h --help)'{-h,--help}'[show usage]' \
+        '1:pattern:' \
+        '2:Mach-O file or bundle:_files' \
+        '3:maximum rows: ' \
+        '*:: :->args'
+}
+
+_macho_sym "$@"

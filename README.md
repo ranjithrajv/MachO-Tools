@@ -1,5 +1,7 @@
 # MachO-Tools
 
+[![test](https://github.com/ranjithrajv/MachO-Tools/actions/workflows/test.yml/badge.svg)](https://github.com/ranjithrajv/MachO-Tools/actions/workflows/test.yml)
+
 Mach-O binary introspection. Reads fat headers, symbol tables, sections and
 `__text`, and answers questions about an executable you have no other knowledge
 of. **It knows nothing about any application** — no formats, no products, no
@@ -7,7 +9,7 @@ save files. Everything here is a fact about the file format or about the bytes.
 
 ```sh
 node src/describe.mjs /usr/local/go/bin/go       # what is in this file?
-node src/symgrep.mjs 'runtime.main' /usr/local/go/bin/go
+node src/sym.mjs 'runtime.main' /usr/local/go/bin/go
 node src/symlookup.mjs 0x100085c30 -b /usr/local/go/bin/go
 node src/findcall.mjs --list /usr/local/go/bin/go 20
 node src/findliteral.mjs LZ4 "/Applications/Some App.app"
@@ -20,6 +22,45 @@ npm run test:mutation     # prove those tests would notice if the tools broke
 ```
 
 No dependencies, no build step, no key material, no game install. Node ≥ 22.15.
+
+## Verify it yourself, in about five seconds
+
+This is the claim this package is built to be judged on, and it is the one row
+in the comparison table below that nobody else has: **every correctness claim is
+reproducible on a clean checkout, offline, with nothing installed.**
+
+```sh
+git clone https://github.com/ranjithrajv/MachO-Tools && cd MachO-Tools
+
+node test/fixtures.mjs --check    #  ~0.1s   the corpus matches its generator
+node test/smoke.mjs               #  ~4s     191 passed, 1 skipped
+node test/mutation-check.mjs      #  ~2m     7 mutations, 7 caught
+```
+
+The two fast numbers are wall-clock on an M-series laptop and are there to set
+expectations, not to be asserted — they move with what is in `/usr/bin`. The
+counts and verdicts are the claim.
+
+No `npm install` first — there are no dependencies to install. No fixture
+download, no game, no key file, no network. `npm run test:all` runs all three.
+
+Those three numbers are the asset, and each one is a different kind of evidence:
+
+| | What it establishes | Why it is not a normal test suite |
+|---|---|---|
+| `fixtures --check` | The corpus is intact | A hand-edited or stale fixture is a test that has stopped testing, while still passing. This re-derives all 37,329 bytes and compares them |
+| `191 passed` | The tools work on binaries they were not written for | Every assertion is pinned to a *known* input. Six are generated, and the rest run against whatever `/usr/bin` has — and the suite asserts its own coverage: both architectures, symbol-less and populated, every shape the seven historical defects needed |
+| `7 caught` | The tests would notice | Each mutation reintroduces one real historical bug into a copy of the tree and requires the suite to fail. **An inconclusive mutation fails the run**, because a mutation that could not be applied once reported green while quietly reducing the count |
+
+The last row is the one worth pausing on. A suite that has never been shown to
+fail is not evidence, and this project has been broken in three distinct ways
+that all reported green — an anchor too stale to apply, a positive control that
+could not fail, an incomplete mutation whose other guard masked it. The history
+is in [Verifying the verification](#verifying-the-tools-and-verifying-the-verification).
+
+**A green `npm run test:all` is also a complete rot check.** The fixtures pin
+exact addresses and counts, so a new toolchain release cannot silently change
+what the readers do. CI runs all three jobs on macOS, Linux and Windows.
 
 ## When to use this, and when not to
 
@@ -53,7 +94,7 @@ Concretely, reach for something else when:
   server. Nothing here replaces a decompiler, and the tools are built to hand
   work *to* one;
 - the binary is **stripped and you have no dSYM** — then symbols are gone and
-  `symgrep`, `symfind` and `symlookup` have nothing to work with. `findcall` and
+  `sym` and `symlookup` have nothing to work with. `findcall` and
   `findliteral` read bytes rather than names and are unaffected.
 
 Reach for **this** when:
@@ -98,6 +139,89 @@ a disassembler is strictly better, and closing them here would mean becoming one
 of those projects instead of this one. Each one is stated in **Limits** below
 rather than left to be discovered.
 
+### What this will not do
+
+Worth stating as a decision, because a gap and a refusal read the same in a
+table and only one of them survives a contributor with good intentions and too
+much time:
+
+| Will not | Because |
+|---|---|
+| **Disassemble** | Handing off to a disassembler is the design. `findcall` output is a shortlist of sites *worth* disassembling; a built-in disassembler would make that shortlist unnecessary and this package redundant |
+| **Resolve indirect / PLT calls** | The target is not in the instruction. Producing it means decoding the stream, which is the disassembler again. A wrong edge here would be worse than a missing one — it would look like a call graph |
+| **Read dSYM / DWARF** | A different file format, a different maintenance burden, and a large amount of code for the minority of binaries whose symbols are in a sidecar |
+| **Parse ObjC/Swift metadata** | MachOKit does this properly and is better at it. Duplicating it is the clearest possible way to become a worse MachOKit |
+| **ELF or PE** | Every format fact here is Mach-O's. Portability was achieved by making the reader portable, not by making it a format zoo |
+| **Code signing, fixups, export tries** | Same reasoning as the above: LIEF and `codesign` cover them, and none of them changes which function a vaddr lands in |
+
+The test for anything on this list is not "is it hard" — indirect call
+resolution is genuinely hard, which is why it stays out. The test is whether
+closing the gap would make this package *worse at the thing it is for*. A
+package that answers 40% of a question is useful; one that answers all of a
+question it was never built for is not.
+
+**Adding DWARF would be a strategy change disguised as a feature.** If it is
+ever worth doing, it should be argued for on those terms, in a discussion about
+what this package becomes — not absorbed as a pull request.
+
+## Use cases
+
+The list above is about *which tool to reach for*. This is about what the
+answers are good for, and who asks the question. Every case here starts from the
+same position: a Mach-O file whose author is not in the room.
+
+### Who consumes it
+
+| | How | Who |
+|---|---|---|
+| One question, one file | `node src/describe.mjs /path/to/app` | curiosity, support, a first look at something unfamiliar |
+| The same question, often | `npm install -g MachO-Tools`, then `macho-*` | anything driven by hand, with man pages and completions |
+| A tool of your own | `import { describe, findCalls } from 'MachO-Tools'` | anything built on top — see **Using it as a library** |
+
+The third row is the one that scales, and it is not a claim made loosely: each
+CLI is a thin wrapper over exactly one `api.mjs` function — `sym.mjs` calls
+`searchSymbols`, `findcall.mjs` calls `findCalls`, `mapliteral.mjs` calls
+`mapLiteral` — so there is no behaviour behind the command line that an importer
+cannot reach, and no second copy of the reader free to answer differently.
+
+### What it unlocks
+
+**A first hour on an unfamiliar binary, in about a second.** `describe` for the
+shape, `sym` for names, `findcall --list` for what it calls most. What comes out
+is a shortlist of addresses, which is the input a disassembler actually wants.
+
+**Incident response and malware triage.** Byte-level facts, no GUI, no project
+file, and no two-hour session spent learning an interface first. `machofile`'s
+lineage is malware analysis, and that is the workload this shape fits.
+
+**Automated checks in a pipeline.** The exit codes are the point here, more than
+the JSON. A gate that scans every binary a build ships has to tell *found
+nothing* apart from *could not look*; tools that report both as success fail in
+the dangerous direction, because a check whose job is to notice something then
+reports that there was nothing to notice. See **Exit codes**.
+
+**Linux and Windows against Mac binaries.** `nm` and `otool` do not run off
+macOS at all, so a Linux CI runner can triage a Mac binary with this and nothing
+else installed.
+
+**Driving an agent or another model.** One dependency-free call returning one
+JSON object is a shape a tool-calling loop can drive, and a package with no
+dependencies is a shape worth handing to one. A GUI is not usable here, and that
+is the whole difference.
+
+**Finding where a file format is handled.** `mapliteral` is the sharpest of
+these: a format magic → the vaddr it loads to → every pointer that references
+it, which is usually the dispatch table sitting beside it. That is "here is
+where the code that reads these files begins", produced without disassembling
+anything.
+
+**Testing somebody else's parser.** `test/fixtures.mjs` writes small Mach-O
+binaries whose answers are known by construction — universal, arm64-only,
+stripped, and one with a decoy call planted in a data section. They are what
+surfaced the slice-relative-offset bug above, and a project testing its own
+reader needs them at least as much as this one does. See **Verifying the
+tools**.
+
 ## Why it is a separate project
 
 These tools were originally written alongside application-specific scripts, and
@@ -136,12 +260,34 @@ surface it, which is the argument for the corpus described below.
 | | |
 |---|---|
 | `describe.mjs` | What is in this file? Every slice, its architecture, extent, symbol counts, where `__TEXT` starts. |
-| `symgrep.mjs` | Regex over a symbol table. `<regex> [binary]` |
-| `symfind.mjs` | Substring over a symbol table, deduplicated and address-ordered. |
+| `sym.mjs` | Search a symbol table by substring, or by regex with `--regex`. One row per name, defined symbols only, imports marked rather than shown as `0x0`. |
 | `symlookup.mjs` | Which function contains this vaddr? Reads symbols directly, because `nm` on a large universal binary is unusable. |
 | `findcall.mjs` | Direct `call`/`jmp` xrefs to an address — or `--list` for the distinct targets a binary calls. |
 | `findliteral.mjs` | Find a byte literal anywhere in a file, per slice, with context. |
 | `mapliteral.mjs` | Map a literal to vaddrs, then find the pointers to them — which is how you find the code that handles a format. |
+
+Six tools. There were seven until `symgrep.mjs` and `symfind.mjs` merged into
+`sym.mjs`: they answered the same question with different defaults — `symgrep`
+matched regexes, kept defined symbols only and returned one row per table entry,
+while `symfind` matched substrings, included imports and deduplicated by name.
+Neither default was a mistake, and a reader who had learned one had to check
+which convention the other used before trusting a result. The old names were
+removed rather than kept as aliases, so the equivalents are `sym.mjs --regex`
+and `sym.mjs --all-imp`.
+
+### Installing
+
+Every tool also ships as `macho-<name>`, with a man page and shell completion:
+
+```sh
+npm install -g MachO-Tools          # macho-sym, macho-describe, ...
+man macho-sym
+```
+
+`man/man1/*.1` and `completions/` are in the published tarball. bash reads
+`completions/macho.bash` if it is copied to your completion directory; zsh reads
+the `completions/_macho-*` files once their directory is on `$fpath`. Vendoring
+`src/` works exactly as before and needs neither.
 
 ### Common flags
 
@@ -151,6 +297,7 @@ surface it, which is the argument for the corpus described below.
 | `-b`, `--binary <path>` | The binary, for tools where every positional is a query. |
 | `--arch=<name>` | Restrict to one architecture. A preference, not a requirement. |
 | `--include-data` | `findcall`: widen the scan from code sections to every section. |
+| `-h`, `--help` | Print usage. `sym` documents itself; the others print it when arguments are missing. |
 
 ### Pointing it at a binary
 
@@ -160,8 +307,8 @@ surface it, which is the argument for the corpus described below.
 4. a documented fallback, so a bare invocation is not a dead end
 
 ```sh
-node src/symgrep.mjs 'someSymbol' /path/to/binary
-MACHO_APP="/Applications/Some App.app" node src/symgrep.mjs 'someSymbol'
+node src/sym.mjs 'someSymbol' /path/to/binary
+MACHO_APP="/Applications/Some App.app" node src/sym.mjs 'someSymbol'
 node src/symlookup.mjs 0x100085c30 -b /path/to/binary
 ```
 
@@ -179,7 +326,7 @@ a missing file.
 ## JSON output
 
 Every tool takes `--json`, with two guarantees so that a consumer does not have
-to learn seven dialects:
+to learn six dialects:
 
 1. **stdout is JSON only.** Progress lines, per-slice narration and the "none
    found" prose all go to stderr. `tool --json | jq` works.
@@ -218,7 +365,7 @@ the command line that is not available to an importer, and no second copy of the
 reader to be wrong in a different way.
 
 ```js
-import { describe, findCalls, lookupAddress, mapLiteral } from 'mach-o-tools';
+import { describe, findCalls, lookupAddress, mapLiteral } from 'MachO-Tools';
 
 const { slices } = describe('/path/to/binary');
 const fn = lookupAddress('/path/to/binary', 0x100085c30n);
@@ -226,11 +373,15 @@ const callers = findCalls('/path/to/binary', fn.start);
 const tables = mapLiteral('/path/to/binary', 'LZ4');
 ```
 
+The specifier is `MachO-Tools`, exactly as `"name"` spells it in `package.json`.
+Package names are case-sensitive when Node resolves them, and `mach-o-tools` —
+the reading most people arrive at from the `macho-*` binary names — is a
+different, uninstalled package. If you are copying this line, copy that one.
+
 | Export | Returns |
 |---|---|
 | `describe(path)` | Every slice: architecture, extent, symbol counts, `__TEXT` bounds |
-| `grepSymbols(path, re, opts)` | Regex over a symbol table, defined-only by default |
-| `findSymbols(path, sub, opts)` | Substring search, deduplicated |
+| `searchSymbols(path, pattern, opts)` | Symbol-table search. `mode: 'substring'` (default) or `'regex'`; `definedOnly` and `dedupe` both default true |
 | `lookupAddress(path, vaddr, opts)` | The function containing an address |
 | `findCalls(path, vaddr, opts)` | Direct call/jmp sites targeting an address |
 | `listCallTargets(path, opts)` | The distinct addresses a binary calls |
@@ -252,6 +403,66 @@ Two conventions worth knowing:
 `src/macho.mjs` — the raw reader — is also importable and is where new format
 support lands first. It is stable within a major version but lower-level and more
 likely to grow than `api.mjs`.
+
+### Borrowing the test corpus
+
+The fixture generator ships too, because a project testing *its own* Mach-O
+reader needs a known-answer corpus at least as much as this one does:
+
+```js
+import { buildFixtures } from 'MachO-Tools/fixtures';
+
+const { files, manifest } = await buildFixtures({ out: '/tmp/corpus' });
+// files.universal, files.arm64only, files.decoy, files.stripped, files.thin…
+// manifest.callCounts, manifest.x86_64, manifest.arm64 — the exact addresses
+//   and counts this project's own suite asserts, so both agree by construction
+```
+
+Each fixture is minimal on purpose, so a failure points at one thing, and every
+one is re-read with this project's reader and checked before it is written — a
+fixture that does not hold up throws at build time rather than quietly weakening
+your suite. `{ check: true }` verifies a corpus against the generator and writes
+nothing. Nothing is written to disk on `import`; only calling `buildFixtures`
+does.
+
+From the shell, same thing:
+
+```sh
+node node_modules/MachO-Tools/test/fixtures.mjs --out-dir /tmp/corpus
+```
+
+### One file, no supply chain
+
+If you would rather not have this in your dependency tree at all, you do not
+need it there. `src/macho.mjs` imports exactly one thing — `node:fs` — and has no
+internal imports, so it works as a single copied file:
+
+```sh
+curl -O https://raw.githubusercontent.com/ranjithrajv/MachO-Tools/main/src/macho.mjs
+```
+
+```js
+import { opener, slicesOf, parseThin, sliceName, readSymbols } from './macho.mjs';
+
+const f = opener('/usr/bin/ssh');
+for (const loc of slicesOf(f)) {
+  const thin = parseThin(f, loc.offset);
+  const syms = readSymbols(f, loc.offset, thin);
+  console.log(sliceName(loc.cputype), syms.defined, 'defined of', syms.total);
+}
+f.close();
+```
+
+No `node_modules`, no lockfile, no transitive tree, no install step, nothing to
+audit but the file you are reading. Copy `src/api.mjs` alongside it if you want
+the query API rather than the raw reader — those two files are the whole
+importable surface, and nothing else in `src/` is reachable from either.
+
+That is a real answer to supply-chain review, not a slogan: a reviewer who wants
+zero dependencies can check one 20 KB file by reading it, and a pipeline that
+must not reach the network can run with no install at all. The same property is
+what makes the tools reasonable to hand to an agent or a CI gate, where a
+one-dependency-free-call shape is worth more than any feature.
 
 ## The call scan is typed
 
@@ -304,7 +515,7 @@ instead:
 
 ```sh
 echo '{"bundle":{"ext":".bundle","macosDir":["bin","exec"]}}' > /tmp/alt.json
-MACHO_CONFIG=/tmp/alt.json node src/symgrep.mjs 'someSymbol'
+MACHO_CONFIG=/tmp/alt.json node src/sym.mjs 'someSymbol'
 ```
 
 `macosDir` is a list of bare path segments rather than a joined string, because
@@ -362,6 +573,16 @@ and reports success is worse than no test.
 asserts that `smoke.mjs` notices. A test that passes proves nothing unless it
 fails when the thing it guards is broken.
 
+The suite also asserts the **no-application-knowledge boundary** this package is
+sold on, which until now was held by review discipline alone. Four `boundary:`
+checks scan `src/`, `test/` and everything `files` puts in the tarball, and fail
+on a publisher, a title or its container format appearing in any of them. The
+names are assembled from fragments so the check can include itself, and each
+group prints the file count it scanned, because a denylist that has quietly
+stopped matching and a walker that has quietly stopped descending both report
+success. `TOWS.md` is deliberately outside the scan: it is the provenance
+assessment, and naming what it assesses is the point of it.
+
 Both of those had to be fixed after they were first written, and the way they
 failed is worth recording:
 
@@ -381,6 +602,17 @@ failed is worth recording:
   `N_SECT` filter left the other guard (`value === 0n`) blocking the imported
   symbols, so the suite passed while establishing nothing. Each mutation now
   restores the actual original defect rather than approximating it.
+- A **stale anchor** did the same thing one level up. One mutation was still
+  written against the five-argument `tallySection` call, and `listCallTargets`
+  has since grown a sixth argument — a `mapped` gate that keeps decoded
+  destinations inside a mapped range. The mutation could no longer be applied,
+  and the run printed `SKIP … anchor not found` and then **exited 0**, so
+  `test:all` stayed green with seven mutations quietly reduced to six. An
+  inconclusive mutation now fails the run like a survivor does, and the
+  "none surviving" line only prints when every mutation really ran and was
+  caught. This is the third distinct route to a confident green this check has
+  had, and the general rule is the same each time: a verification that cannot
+  fail is worse than a missing one, because it reports success.
 
 ## Limits
 
@@ -400,7 +632,7 @@ These are the ones that matter, stated rather than discovered:
   rather than at an instruction boundary. Alignment is not something the file
   format records, so this cannot be fixed without a disassembler. The arm64 path
   steps 4 bytes at a time and so does see only aligned `BL`s.
-- **Stripped binaries have no symbols** to grep. `symgrep`, `symfind` and
+- **Stripped binaries have no symbols** to grep. `sym` and
   `symlookup` will report nothing rather than guess; `findcall` and `findliteral`
   still work, since they read bytes rather than names. There is no dSYM support,
   so a shipped build with its symbols in a sidecar is out of reach.
@@ -420,10 +652,35 @@ incorporates — both are required, since LGPLv3 is defined in terms of GPLv3.
 This is a format reader. It has no opinion about, and no access to, the contents
 of the files it is pointed at.
 
-On why LGPL rather than MIT: the reader is meant to be *used* by other tools —
-imported, or vendored — without those tools becoming copyleft. LGPL keeps the
-improvement path open for anyone who extends the reader while staying permissive
-toward the applications built on top of it. If you only want to run these as
-commands, the distinction costs you nothing; if you want to embed the reader in
-a larger tool, LGPL-3.0 section 4d1 lets you link against a modified version
-without relicensing your application.
+### Provenance
+
+This reader was written while reversing a commercial product, and it is
+published from a workspace whose disclosure for those projects lives in the
+sibling project's `NOTICE.md` — reach it from the repository root rather than
+by link here, because this package is published to npm on its own and every path
+in this file is relative to *this* directory. Two things follow, and the second
+matters more than the first.
+
+**Nothing proprietary ships here.** No key material, no game data, no
+disassembly, no asset bytes — this package has no dependencies, and the only
+inputs it ever reads are the Mach-O files a user points it at. The
+no-application-knowledge claim above is not maintained by review discipline
+alone: four `boundary:` checks in the suite scan `src/`, `test/` and everything
+in the published tarball, and fail on a publisher, a title or its container
+format appearing in any of them.
+
+**The licence does not extend to that product.** LGPL covers this code. It does
+not license anyone else's intellectual property, and reading a file format out
+of a binary does not make the binary yours to redistribute. The same reasoning
+that keeps game data out of every tarball here keeps it out of this one; this
+package redistributes no bytes of anything it was pointed at.
+
+### On why LGPL rather than MIT
+
+The reader is meant to be *used* by other tools — imported, or vendored —
+without those tools becoming copyleft. LGPL keeps the improvement path open for
+anyone who extends the reader while staying permissive toward the applications
+built on top of it. If you only want to run these as commands, the distinction
+costs you nothing; if you want to embed the reader in a larger tool, LGPL-3.0
+section 4d1 lets you link against a modified version without relicensing your
+application.

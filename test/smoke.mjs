@@ -69,6 +69,12 @@
  * encoding, which it did even with its arm64 comparison inverted, so a dead
  * scanner passed. A check that cannot fail is not a check.
  *
+ * It also asserts the **no-application-knowledge boundary**, which is the claim
+ * the package is sold on. That claim was held by review discipline alone until
+ * this check existed; see the `boundary:` section below for the two ways a
+ * denylist quietly becomes a check that passes on nothing, and how it avoids
+ * both.
+ *
  * Run `npm run test:mutation` to confirm the claims in this file are load-
  * bearing: it reintroduces each defect and asserts this test notices.
  */
@@ -87,6 +93,7 @@ import { count } from '../src/output.mjs';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 const SRC = fileURLToPath(new URL('../src/', import.meta.url));
+const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const FIXTURES = path.join(HERE, 'fixtures');
 
 /* ------------------------------------------------------------------ *
@@ -406,10 +413,10 @@ console.log('macho.mjs:');
   check(all.length > 0, 'slices are enumerated', all.join(', '));
   f.close();
 
-  const bogus = run('symgrep.mjs', ['zzq-no-such-symbol-zzq', b.path]);
+  const bogus = run('sym.mjs', ['zzq-no-such-symbol-zzq', b.path]);
   check(
     bogus.code === 0 && /0 match/.test(bogus.stdout),
-    'symgrep: an unmatched pattern exits 0 and reports zero',
+    'sym: an unmatched pattern exits 0 and reports zero',
     (bogus.stdout.match(/0 match[^\n]*/) || [`exit ${bogus.code}`])[0],
   );
 }
@@ -425,17 +432,22 @@ console.log('\n--json:');
   const addr = (probe.facts.textAddr ?? probe.facts.firstAddr ?? 0n).toString(16);
   const literal = 'FIXTURELITERAL';
 
+  // Labelled explicitly rather than reusing the tool name, because `sym` is
+  // exercised in more than one mode and two identically-named checks are
+  // indistinguishable in the output — and a check you cannot tell apart is one
+  // whose failure you cannot act on.
   const cases = [
-    ['describe.mjs', [probe.path]],
-    ['symgrep.mjs', ['target|main|true', probe.path]],
-    ['symfind.mjs', ['a', probe.path, '5']],
-    ['symlookup.mjs', ['0x' + addr, '-b', probe.path]],
-    ['findcall.mjs', ['--list', probe.path, '3']],
-    ['findliteral.mjs', [literal, probe.path]],
-    ['mapliteral.mjs', [literal, probe.path]],
+    ['describe', 'describe.mjs', [probe.path]],
+    ['sym substring', 'sym.mjs', ['target|main|true', probe.path]],
+    ['sym regex', 'sym.mjs', ['--regex', 'target|main|true', probe.path]],
+    ['sym capped', 'sym.mjs', ['a', probe.path, '5']],
+    ['symlookup', 'symlookup.mjs', ['0x' + addr, '-b', probe.path]],
+    ['findcall', 'findcall.mjs', ['--list', probe.path, '3']],
+    ['findliteral', 'findliteral.mjs', [literal, probe.path]],
+    ['mapliteral', 'mapliteral.mjs', [literal, probe.path]],
   ];
 
-  for (const [tool, args] of cases) {
+  for (const [label, tool, args] of cases) {
     const r = run(tool, ['--json', ...args], { timeout: 180000 });
     let parsed = null;
     let why = r.timedOut ? 'timed out' : '';
@@ -447,22 +459,22 @@ console.log('\n--json:');
     // stdout must parse on its own. A diagnostic written to stdout breaks every
     // pipeline that consumes it, and the failure is a confusing parse error
     // rather than anything pointing at the tool.
-    check(parsed !== null, `${tool}: --json writes parseable JSON to stdout`, why);
+    check(parsed !== null, `${label}: --json writes parseable JSON to stdout`, why);
     if (!parsed) continue;
     check(
       typeof parsed.tool === 'string' && typeof parsed.ok === 'boolean',
-      `${tool}: the envelope carries tool and ok`,
+      `${label}: the envelope carries tool and ok`,
       `tool=${parsed.tool} ok=${parsed.ok}`,
     );
     check(
       parsed.errors === undefined || Array.isArray(parsed.errors),
-      `${tool}: errors, when present, is a list`,
+      `${label}: errors, when present, is a list`,
     );
     // Addresses must not arrive as numbers. A 64-bit vaddr does not survive
     // JSON.parse's Number, and the loss is invisible at the call site.
     check(
       !/"(addr|vaddr|start|dest)":\s*\d/.test(r.stdout),
-      `${tool}: addresses are emitted as hex strings, not numbers`,
+      `${label}: addresses are emitted as hex strings, not numbers`,
     );
   }
 
@@ -565,7 +577,7 @@ console.log('\napi.mjs (importable, no subprocess):');
   if (api) {
     check(true, 'the package entry point imports', 'src/api.mjs');
     const expected = [
-      'describe', 'grepSymbols', 'findSymbols', 'lookupAddress',
+      'describe', 'searchSymbols', 'lookupAddress',
       'findCalls', 'listCallTargets', 'findLiteral', 'mapLiteral',
       'withFile', 'searchRange', 'coversAddress', 'callEncoding',
     ];
@@ -581,7 +593,7 @@ console.log('\napi.mjs (importable, no subprocess):');
     // binary call X" need false, not a stack trace.
     let threw = null;
     try {
-      api.grepSymbols(probe.path, 'zzq-no-such-symbol-zzq');
+      api.searchSymbols(probe.path, 'zzq-no-such-symbol-zzq');
       api.findCalls(probe.path, 0x1n);
       api.findLiteral(probe.path, 'zzq-no-such-literal-zzq');
     } catch (e) {
@@ -785,6 +797,156 @@ for (const b of binaries) {
     'coverage: every input shape the defects need was present',
     have.join('; '),
   );
+}
+
+/* ---- boundary: the reader knows nothing about any application ----------- */
+
+{
+  // The claim the whole package rests on is that every fact it reports is a fact
+  // about the file format or the bytes. That claim was held by review discipline
+  // alone, which is the kind of thing that decays silently: one plausible
+  // comment naming one publisher is how a format reader quietly becomes a tool
+  // for one product, and nothing else in this suite would notice.
+  //
+  // Scope is the reader, the suite, and what `files` puts in the tarball. Prose
+  // that *states* the guarantee is deliberately fine — README.md says "no
+  // formats, no products, no save files" — so this looks for names, not for the
+  // words "product" or "save".
+  //
+  // TOWS.md is not scanned, and must not be. It is the provenance assessment,
+  // which has to name what it is assessing to be worth anything; excluding it is
+  // what lets that document stay candid. `NOTICE.md`, when it is written, is the
+  // same case.
+  // Assembled from fragments, so this file does not literally contain the strings
+  // it searches for. Written out in full the check fails on its own source,
+  // which is a real failure and a useless one — and the two ways to dodge that
+  // are both worse: exempting `smoke.mjs` from the scan opens a hole in exactly
+  // the file where a careless name is most likely to be pasted, and leaving the
+  // literals in place means the guard can never include itself.
+  const NAMES = [
+    ['play', 'rix'],   // the publisher
+    ['town', 'ship'],  // the title
+    ['pl', 'xe'],      // its container format: a product fact, not a format fact
+  ];
+  const FORBIDDEN = NAMES.map((parts) => ({
+    re: new RegExp(`\\b${parts.join('')}\\b`, 'i'),
+    name: parts.join(''),
+  }));
+
+  // `.ts` is here because `src/api.d.ts` is the hand-written public contract,
+  // not an internal file: it is what a consumer's editor reads, so a product name
+  // in it would be the most public one in the package. It was missed on the first
+  // pass, which is why the check prints the file count it scanned.
+  const TEXT_EXT = new Set(['.mjs', '.js', '.ts', '.mts', '.cts', '.json', '.md', '.yml', '.1', '.bash', '.sh']);
+
+  // Extensionless files count as text: the zsh completions are named `_macho-*`
+  // with no extension at all, and they are real and shipped.
+  const isTextFile = (p) => {
+    const ext = path.extname(p);
+    return !ext || TEXT_EXT.has(ext);
+  };
+
+  function textFilesUnder(dir) {
+    // A path may be a file or a directory, and the difference is the kind that
+    // fails silently: `readdirSync` on a file throws ENOTDIR, so a version that
+    // only ever recursed returned an empty list for every top-level file and
+    // reported the group as scanned-and-clean. It was checked against nothing.
+    if (fs.existsSync(dir) && fs.statSync(dir).isFile()) return isTextFile(dir) ? [dir] : [];
+    const out = [];
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return out; // absent on a partial checkout; the suite reports its own gaps
+    }
+    for (const entry of entries) {
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        // `fixtures` holds generated *binaries*; decoding those as text would
+        // only manufacture false positives out of mojibake.
+        if (entry.name === 'fixtures' || entry.name === 'node_modules') continue;
+        out.push(...textFilesUnder(p));
+      } else if (entry.isFile() && isTextFile(p)) {
+        out.push(p);
+      }
+    }
+    return out;
+  }
+
+  function scan(files) {
+    const hits = [];
+    for (const file of files) {
+      let text;
+      try {
+        text = fs.readFileSync(file, 'utf8');
+      } catch {
+        continue;
+      }
+      text.split('\n').forEach((line, i) => {
+        for (const { re, name } of FORBIDDEN) {
+          if (re.test(line)) hits.push(`${path.relative(ROOT, file)}:${i + 1} (${name})`);
+        }
+      });
+    }
+    return hits;
+  }
+
+  // Positive control, and it comes first on purpose. A denylist whose patterns
+  // have all gone dead reports the same PASS as one that works — the checks below
+  // would be green while scanning for nothing. This is the same lesson the call
+  // scanner's positive control exists for, applied to the thing that guards the
+  // project's central claim. Each pattern is held to its own name, which catches
+  // a dead regex, a lost `i` flag and a mis-ordered list.
+  const dead = FORBIDDEN.filter(({ re, name }) => !re.test(name));
+  check(
+    dead.length === 0,
+    'boundary: the name check can actually fail',
+    dead.length ? `${dead.length} pattern(s) never match — it would pass on anything` : `${FORBIDDEN.length} patterns, all live`,
+  );
+
+  // The shipped set is derived from `package.json`'s own `files` array rather than
+  // restated here. It used to be a hardcoded list of three files, which is a
+  // denylist that stops matching the moment anyone adds a file — and a denylist
+  // that has quietly stopped matching reports success, which is the failure this
+  // whole section exists to prevent. Deriving it means adding to `files` cannot
+  // silently escape the scan.
+  const pkgPath = path.join(ROOT, 'package.json');
+  let pkgFiles = null;
+  try {
+    pkgFiles = JSON.parse(fs.readFileSync(pkgPath, 'utf8')).files;
+  } catch {
+    // Left null, and reported below rather than treated as "nothing to scan".
+  }
+
+  const shipped = pkgFiles
+    ? [pkgPath, ...pkgFiles.map((f) => path.join(ROOT, f))]
+    : [pkgPath, path.join(ROOT, 'README.md'), path.join(ROOT, 'config.json')];
+
+  // The fallback above is a weaker check wearing the same name, so say which one
+  // ran. A reader who trusts this needs to know whether the shipped set was
+  // derived or guessed.
+  check(
+    Array.isArray(pkgFiles) && pkgFiles.length > 0,
+    'boundary: the shipped-file list is derived from package.json, not restated',
+    Array.isArray(pkgFiles) && pkgFiles.length > 0
+      ? `derived from files[${pkgFiles.length}]`
+      : 'could not read package.json "files" — falling back to a 3-file list, which covers less',
+  );
+
+  const groups = [
+    ['in the reader', [SRC]],
+    ['in the suite', [HERE]],
+    ['in what the package ships', shipped],
+  ];
+
+  for (const [label, roots] of groups) {
+    const hits = scan(roots.flatMap(textFilesUnder));
+    check(
+      hits.length === 0,
+      `boundary: no application is named ${label}`,
+      hits.length ? hits.slice(0, 6).join('; ') : `${label.replace('the ', '')}: ${roots.flatMap(textFilesUnder).length} file(s)`,
+    );
+  }
 }
 
 /* ------------------------------------------------------------------ *

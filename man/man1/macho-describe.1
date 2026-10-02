@@ -1,0 +1,80 @@
+.TH MACHO\-DESCRIBE 1 "October 2, 2026" "MachO-Tools 0.1.0" "User Commands"
+.SH NAME
+macho\-describe \- report what is in a Mach\-O file
+.SH SYNOPSIS
+.B macho\-describe
+.RI [ binary | bundle ]
+.RB [ \-\-json ]
+.RB [ \-b | \-\-binary
+.IR path ]
+.RB [ \-h | \-\-help ]
+.SH DESCRIPTION
+Reports every slice in a Mach\-O file: its architecture, byte extent within the
+file, symbol counts, and the address and size of its
+.B __TEXT
+section. For a universal binary this is the first thing to run, because every
+other tool in this package reads a single slice and a fat header is the usual
+reason a quick script reads the wrong bytes.
+.PP
+A slice that could not be parsed is listed rather than omitted, so that a
+malformed slice is visible instead of the file appearing to have fewer slices
+than it does.
+.SH OPTIONS
+.TP
+.BR \-b ", " \-\-binary " " \fIpath\fR
+The binary to read.
+.TP
+.B \-\-json
+Write one JSON object to standard output and send prose to standard error.
+Addresses are rendered as
+.B "0x..."
+strings rather than numbers, because a 64\-bit virtual address does not survive
+a JSON number.
+.SH ENVIRONMENT
+.TP
+.B MACHO_BINARY
+The binary to read when none is given on the command line.
+.TP
+.B MACHO_APP
+An application bundle to read, tried after
+.BR MACHO_BINARY .
+.TP
+.B MACHO_CONFIG
+Path to a replacement
+.IR config.json .
+.SH EXIT STATUS
+.TP
+.B 0
+The file was read.
+.TP
+.B 2
+Usage error.
+.TP
+.B 3
+The file could not be read, or is not a Mach\-O.
+.SH EXAMPLES
+.RS
+.nf
+macho\-describe /usr/local/go/bin/go
+macho\-describe "/Applications/Some App.app"
+macho\-describe \-\-json /usr/bin/ssh | jq '.slices[].arch'
+.fi
+.RE
+.SH NOTES
+If every slice reports no symbol table, the binary is stripped and there are no
+names to search.
+.BR macho\-sym (1),
+.BR macho\-symlookup (1)
+and
+.BR macho\-findcall (1)
+will then have little or nothing to work with, while
+.BR macho\-findliteral (1)
+still works because it reads bytes rather than names.
+.SH SEE ALSO
+.BR macho\-sym (1),
+.BR macho\-symlookup (1),
+.BR macho\-findcall (1),
+.BR macho\-findliteral (1),
+.BR macho\-mapliteral (1),
+.BR otool (1),
+.BR lipo (1)

@@ -1,0 +1,19 @@
+#compdef macho-findliteral
+#
+# zsh completion for macho-findliteral. Install as _macho-findliteral in a
+# directory on your $fpath.
+#
+# MachO-Tools 0.1.0.
+
+_macho_findliteral() {
+    _arguments -s -S \
+        '--text[restrict the search to the __TEXT section]' \
+        '(-b --binary)'{-b,--binary}'[the binary or bundle to read]:Mach-O file or bundle:_files' \
+        '--json[write one JSON object to stdout]' \
+        '(-h --help)'{-h,--help}'[show usage]' \
+        '1:literal byte string:' \
+        '2:Mach-O file or bundle:_files' \
+        '*:: :->args'
+}
+
+_macho_findliteral "$@"

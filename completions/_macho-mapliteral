@@ -1,0 +1,18 @@
+#compdef macho-mapliteral
+#
+# zsh completion for macho-mapliteral. Install as _macho-mapliteral in a
+# directory on your $fpath.
+#
+# MachO-Tools 0.1.0.
+
+_macho_mapliteral() {
+    _arguments -s -S \
+        '(-b --binary)'{-b,--binary}'[the binary or bundle to read]:Mach-O file or bundle:_files' \
+        '--json[write one JSON object to stdout]' \
+        '(-h --help)'{-h,--help}'[show usage]' \
+        '1:literal byte string:' \
+        '2:Mach-O file or bundle:_files' \
+        '*:absolute file offset to map instead of searching: '
+}
+
+_macho_mapliteral "$@"

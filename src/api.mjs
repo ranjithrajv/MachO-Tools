@@ -140,48 +140,79 @@ function symbolSlice(f, arch) {
   return { offset: rich.offset, arch: rich.arch, thin: rich.thin, size: rich.size };
 }
 
-/**
- * Regex over a slice's symbol table.
- *
- * `definedOnly` defaults to true, matching `symgrep`: an imported name carries
- * neither an address nor an implementation, so this answers "where is this
- * implemented" rather than "what does this link against". Turn it off when
- * imports are the actual question.
- */
-export function grepSymbols(path, pattern, { arch, flags = 'i', definedOnly = true } = {}) {
-  const re = new RegExp(pattern, flags);
-  return withFile(path, (f) => {
-    const slice = symbolSlice(f, arch);
-    const syms = readSymbols(f, slice.offset, slice.thin);
-    const matches = syms.entries
-      .filter((e) => (definedOnly ? e.defined : true) && re.test(e.name))
-      .sort(byAddr);
-    return { arch: slice.arch, pattern, flags, matches, defined: syms.defined, total: syms.total, note: syms.note };
-  });
+/** The chosen slice plus its symbols, read once. Shared by every symbol query. */
+function symbolsFor(f, arch) {
+  const slice = symbolSlice(f, arch);
+  return { slice, syms: readSymbols(f, slice.offset, slice.thin) };
 }
 
 /**
- * Substring over a symbol table, deduplicated and address-ordered.
+ * Search a symbol table by substring or regex, with one coherent set of rules.
  *
- * Deduplicated because a symbol table routinely carries one name at several
- * addresses — aliases, thunks, per-architecture copies — and a list where
- * `memcpy` appears nine times is harder to read than one where it appears once.
- * `unique: false` restores the raw per-entry form.
+ * This is the primitive behind the `macho-sym` CLI, which replaced `symgrep`
+ * and `symfind` — two tools that answered the same question with different
+ * defaults. `symgrep` matched regexes, defaulted to defined symbols and returned
+ * one row per table entry; `symfind` matched substrings, included imports and
+ * deduplicated by name. Neither default was a mistake, and a tool with two
+ * contradictory notions of "a symbol" is the kind of thing this project has been
+ * deleting bugs out of — so the rules are now stated once:
+ *
+ *   - `mode: 'substring'` (default) matches literally; `'regex'` matches
+ *     `/pattern/i`. Substring is the default because the name is usually known
+ *     but not its exact spelling, and a pattern that accidentally compiles as a
+ *     bad regex is a worse failure than one that matches too much.
+ *   - `definedOnly` defaults to true: an imported name carries no address and no
+ *     implementation, so it is not an answer to "where is this implemented".
+ *   - `dedupe` defaults to true: one name is one row, because a symbol table
+ *     routinely carries a name at several addresses (aliases, thunks, per-arch
+ *     copies) and nine rows saying `memcpy` is harder to read than one.
+ *
+ * The two narrower functions this absorbed were removed rather than kept as
+ * aliases: at 0.1.0 there are no external consumers to strand, and leaving two
+ * superseded exports would recreate the ambiguity the merge exists to end.
+ *
+ * @param {string} path
+ * @param {string} pattern
+ * @param {object} [opts]
+ * @param {string} [opts.arch] preferred architecture; falls back to the richest
+ * @param {'substring'|'regex'} [opts.mode='substring']
+ * @param {string} [opts.flags='i'] regex flags, ignored in substring mode
+ * @param {boolean} [opts.definedOnly=true] exclude imported (N_EXT) names
+ * @param {boolean} [opts.dedupe=true] one row per distinct name
+ * @param {number} [opts.max=4000] row cap; only applied when deduplicating
+ * @returns {object}
+ * @throws if the pattern is not a valid regex, or the file is not a Mach-O
  */
-export function findSymbols(path, substring, { arch, max = 4000, unique = true } = {}) {
+export function searchSymbols(path, pattern, {
+  arch, mode = 'substring', flags = 'i', definedOnly = true, dedupe = true, max = 4000,
+} = {}) {
+  if (typeof pattern !== 'string' || !pattern) throw new TypeError('searchSymbols: a pattern is required');
+  // Built before the file is opened so an invalid regex is a usage error about
+  // the pattern, not a confusing failure from deep inside a read.
+  const re = mode === 'regex' ? new RegExp(pattern, flags) : null;
+
   return withFile(path, (f) => {
-    const slice = symbolSlice(f, arch);
-    const syms = readSymbols(f, slice.offset, slice.thin);
-    const hits = syms.entries.filter((e) => e.name.includes(substring));
-    const matches = unique
+    const { slice, syms } = symbolsFor(f, arch);
+    const hits = syms.entries.filter(
+      (e) => (definedOnly ? e.defined : true) && (re ? re.test(e.name) : e.name.includes(pattern)),
+    );
+    const matches = dedupe
       ? [...new Map(hits.map((e) => [e.name, e])).values()].sort(byAddr).slice(0, max)
       : hits.slice(0, max);
     return {
-      arch: slice.arch, substring, matches,
+      arch: slice.arch,
+      pattern,
+      mode,
+      flags: mode === 'regex' ? flags : null,
+      matches,
       count: hits.length,
       uniqueCount: new Set(hits.map((e) => e.name)).size,
-      truncated: unique && hits.length > max,
-      defined: syms.defined, total: syms.total, note: syms.note,
+      truncated: hits.length > matches.length,
+      deduped: dedupe,
+      definedOnly,
+      defined: syms.defined,
+      total: syms.total,
+      note: syms.note,
     };
   });
 }

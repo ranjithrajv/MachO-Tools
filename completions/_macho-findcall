@@ -1,0 +1,33 @@
+#compdef macho-findcall
+#
+# zsh completion for macho-findcall. Install as _macho-findcall in a directory
+# on your $fpath.
+#
+# MachO-Tools 0.1.0.
+
+_macho_findcall() {
+    local -a state
+    _arguments -s -S -C \
+        '--list[list the distinct addresses the binary calls]' \
+        '--include-data[scan every section, not only those marked as code]' \
+        '--arch=[prefer an architecture]:architecture:(x86_64 arm64)' \
+        '(-b --binary)'{-b,--binary}'[the binary or bundle to read]:Mach-O file or bundle:_files' \
+        '--json[write one JSON object to stdout]' \
+        '(-h --help)'{-h,--help}'[show usage]' \
+        '1:hexadecimal address (with 0x), or the binary under --list: ' \
+        '2:Mach-O file or bundle:_files' \
+        '3:maximum targets: ' \
+        '*:: :->args'
+
+    case $state in
+        args)
+            # Under --list the first positional is the binary, so complete it
+            # as a path. Otherwise it is an address and a path there is wrong.
+            if (( ${words[CURRENT]} == 1 )) && [[ ${words[1]} == (--list|-l) ]]; then
+                _files
+            fi
+            ;;
+    esac
+}
+
+_macho_findcall "$@"

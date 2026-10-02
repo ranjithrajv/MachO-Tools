@@ -1,0 +1,89 @@
+.TH MACHO\-SYMLOOKUP 1 "October 2, 2026" "MachO-Tools 0.1.0" "User Commands"
+.SH NAME
+macho\-symlookup \- find which function contains a virtual address
+.SH SYNOPSIS
+.B macho\-symlookup
+.I hex-vaddr
+.RI [ hex-vaddr ...]
+.RB [ \-\-json ]
+.RB [ \-\-arch= name ]
+.RB [ \-b | \-\-binary
+.IR path ]
+.RB [ \-h | \-\-help ]
+.SH DESCRIPTION
+Reads symbols directly and answers which function contains each given virtual
+address, together with the offset into that function and its size.
+.PP
+This reads the symbol table rather than running
+.BR nm (1),
+because
+.B nm
+on a large universal binary takes minutes where this answers in milliseconds.
+.PP
+Only defined, address\-bearing symbols are considered. Imported symbols carry a
+null address, so including them would make any low address resolve to an import
+sitting at zero \(em a confident, plausible and wrong answer.
+.PP
+Every positional argument is an address, so the binary comes from
+.B \-b
+or from the environment rather than from the last positional.
+.SH OPTIONS
+.TP
+.BI \-\-arch= name
+Prefer one architecture. A preference, not a requirement: an absent architecture
+falls back to the richest slice.
+.TP
+.BR \-b ", " \-\-binary " " \fIpath\fR
+The binary to read.
+.TP
+.B \-\-json
+Write one JSON object to standard output and send prose to standard error.
+Addresses are rendered as
+.B "0x..."
+strings rather than numbers.
+.SH ENVIRONMENT
+.TP
+.B MACHO_BINARY
+The binary to read when none is given.
+.TP
+.B MACHO_APP
+An application bundle to read, tried after
+.BR MACHO_BINARY .
+.TP
+.B MACHO_CONFIG
+Path to a replacement
+.IR config.json .
+.SH EXIT STATUS
+.TP
+.B 0
+At least one address resolved to a function.
+.TP
+.B 1
+The tool ran and nothing resolved. A negative answer, not an error.
+.TP
+.B 2
+Usage error, including an address that is not hexadecimal with an
+.B 0x
+prefix.
+.TP
+.B 3
+The file could not be read, or the chosen slice has no symbol table.
+.SH EXAMPLES
+.RS
+.nf
+macho\-symlookup 0x100085c30 \-b /usr/local/go/bin/go
+macho\-symlookup \-\-json 0x100085c30 \-b /usr/local/go/bin/go | jq '.data.function'
+.fi
+.RE
+.PP
+Note the
+.B 0x
+prefix. The prefix is required, because a bare hexadecimal number is
+ambiguous with a decimal one and a tool that guesses which was meant answers
+about the wrong address.
+.SH SEE ALSO
+.BR macho\-sym (1),
+.BR macho\-describe (1),
+.BR macho\-findcall (1),
+.BR nm (1),
+.BR otool (1)

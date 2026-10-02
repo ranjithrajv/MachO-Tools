@@ -1,0 +1,89 @@
+.TH MACHO\-FINDLITERAL 1 "October 2, 2026" "MachO-Tools 0.1.0" "User Commands"
+.SH NAME
+macho\-findliteral \- find a byte string inside a Mach\-O file
+.SH SYNOPSIS
+.B macho\-findliteral
+.I literal
+.RI [ binary | bundle ]
+.RB [ \-\-text ]
+.RB [ \-\-json ]
+.RB [ \-b | \-\-binary
+.IR path ]
+.RB [ \-h | \-\-help ]
+.SH DESCRIPTION
+Searches the whole file, or its
+.B __TEXT
+section with
+.BR \-\-text ,
+for a literal byte string, and reports each occurrence with its file offset,
+its virtual address where that offset is mapped, and surrounding printable
+context.
+.PP
+The literal is matched as raw bytes, so C\-style escapes work and a pattern
+containing shell metacharacters needs no quoting beyond the shell's own. This
+is the tool to reach for when a name is a format magic rather than a symbol: it
+reads bytes, so it still works on a stripped binary.
+.SH OPTIONS
+.TP
+.BR \-b ", " \-\-binary " " \fIpath\fR
+The binary to read.
+.TP
+.B \-\-json
+Write one JSON object to standard output and send prose to standard error.
+Offsets are rendered as
+.B "0x..."
+strings where they are 64\-bit.
+.TP
+.B \-\-text
+Restrict the search to the
+.B __TEXT
+section, which is much cheaper when the literal is already known to be there.
+.SH ENVIRONMENT
+.TP
+.B MACHO_BINARY
+The binary to read when none is given on the command line.
+.TP
+.B MACHO_APP
+An application bundle to read, tried after
+.BR MACHO_BINARY .
+.TP
+.B MACHO_CONFIG
+Path to a replacement
+.IR config.json ,
+including the scan chunk size and overlap, which are performance knobs and never
+change what a search finds.
+.SH EXIT STATUS
+.TP
+.B 0
+At least one occurrence was found.
+.TP
+.B 1
+The tool ran and the literal was not present. A distinct negative result, not an
+error.
+.TP
+.B 2
+Usage error, including a missing literal.
+.TP
+.B 3
+The file could not be read.
+.SH EXAMPLES
+.RS
+.nf
+macho\-findliteral LZ4 "/Applications/Some App.app"
+macho\-findliteral \\x1f\\x8b \-\-text /usr/bin/ssh
+.fi
+.RE
+.SH NOTES
+An occurrence in a slice other than the one whose address is shown is possible
+when a fat binary contains the same literal twice. Every hit carries the slice
+it was found in.
+.PP
+To go from an occurrence to the code that handles it, map the literal to its
+addresses with
+.BR macho\-mapliteral (1),
+which also searches for pointers to those addresses.
+.SH SEE ALSO
+.BR macho\-mapliteral (1),
+.BR macho\-findcall (1),
+.BR macho\-describe (1),
+.BR strings (1)

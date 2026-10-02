@@ -413,7 +413,7 @@ function universal() {
 /**
  * A binary with no symbol table at all — the stripped case.
  *
- * `findcall` and `findliteral` read bytes and must still work on it; `symgrep`
+ * `findcall` and `findliteral` read bytes and must still work on it; `sym`
  * must say so rather than report zero matches as though that were a finding.
  */
 function stripped() {
@@ -609,72 +609,175 @@ function isMachO(p) {
 }
 
 /* ------------------------------------------------------------------ *
- * main
+ * build
  * ------------------------------------------------------------------ */
 
-const check = process.argv.includes('--check');
-fs.mkdirSync(OUT, { recursive: true });
+/**
+ * Build the corpus, write or check it, and verify it.
+ *
+ * This is the whole of what running the file does, and it is exported so that a
+ * project testing *its own* Mach-O reader can borrow the corpus rather than
+ * write its own. The argument forms are the command-line ones:
+ *
+ *     import { buildFixtures } from 'MachO-Tools/fixtures';
+ *     await buildFixtures();                       // → test/fixtures/*.macho
+ *     await buildFixtures({ out: '/tmp/corpus' }); // → somewhere of your choosing
+ *     await buildFixtures({ check: true });        // verify, write nothing
+ *
+ * `out` is a parameter rather than a constant because the one thing a consumer
+ * cannot do with this is write into this repository. `check` is exported for the
+ * same reason the CI `fixtures` job exists: a corpus that has been hand-edited,
+ * or has drifted from the generator, stops testing anything while still passing.
+ *
+ * Returns the manifest, which carries the addresses and call counts the corpus
+ * asserts — so a consumer's own tests can reference the same numbers this
+ * project's do, instead of re-deriving them and disagreeing.
+ *
+ * Throws on a mismatch or a fixture that fails `verify()`. A consumer that
+ * swallows that exception is re-creating the exact failure mode this file exists
+ * to prevent: a suite that passes for the wrong reason.
+ */
+export async function buildFixtures({ out = OUT, check = false } = {}) {
+  fs.mkdirSync(out, { recursive: true });
 
-const x86 = codeFixture(CPU_X86_64);
-const arm = codeFixture(CPU_ARM64);
-const decoy = decoyFixture();
+  const x86 = codeFixture(CPU_X86_64);
+  const arm = codeFixture(CPU_ARM64);
+  const decoy = decoyFixture();
 
-const BUILT = {
-  'universal.macho': universal(),
-  'thin-x86_64.macho': thinMachO({ cputype: CPU_X86_64, ...x86 }),
-  'thin-arm64.macho': thinMachO({ cputype: CPU_ARM64, ...arm }),
-  'arm64-only.macho': thinMachO({ cputype: CPU_ARM64, text: arm.text, data: arm.data, symbols: arm.symbols }),
-  'decoy.macho': thinMachO({ cputype: CPU_X86_64, text: decoy.text, data: decoy.data, symbols: decoy.symbols, textFlags: decoy.textFlags }),
-  'stripped.macho': thinMachO({ cputype: CPU_X86_64, text: x86.text, data: x86.data, symbols: [] }),
-};
+  const BUILT = {
+    'universal.macho': universal(),
+    'thin-x86_64.macho': thinMachO({ cputype: CPU_X86_64, ...x86 }),
+    'thin-arm64.macho': thinMachO({ cputype: CPU_ARM64, ...arm }),
+    'arm64-only.macho': thinMachO({ cputype: CPU_ARM64, text: arm.text, data: arm.data, symbols: arm.symbols }),
+    'decoy.macho': thinMachO({ cputype: CPU_X86_64, text: decoy.text, data: decoy.data, symbols: decoy.symbols, textFlags: decoy.textFlags }),
+    'stripped.macho': thinMachO({ cputype: CPU_X86_64, text: x86.text, data: x86.data, symbols: [] }),
+  };
 
 // Addresses are written alongside the binaries, because the suite's assertions
 // are about *these* functions and a hardcoded hex constant in a test file is a
 // number nobody can check. Reading them from here keeps the test and the
 // generator agreeing on what was built.
-const manifest = {
-  generated: 'by test/fixtures.mjs — do not hand-edit',
-  universal: BUILT['universal.macho'].length,
-  thin: { x86_64: BUILT['thin-x86_64.macho'].length, arm64: BUILT['thin-arm64.macho'].length },
-  arm64only: BUILT['arm64-only.macho'].length,
-  decoy: BUILT['decoy.macho'].length,
-  stripped: BUILT['stripped.macho'].length,
-  x86_64: { ...Object.fromEntries(Object.entries(x86.addresses).map(([k, v]) => [k, `0x${v.toString(16)}`])) },
-  arm64: { ...Object.fromEntries(Object.entries(arm.addresses).map(([k, v]) => [k, `0x${v.toString(16)}`])) },
-  decoyAddrs: { ...Object.fromEntries(Object.entries(decoy.addresses).map(([k, v]) => [k, `0x${v.toString(16)}`])) },
-  callCounts: {
-    universal_target: 4,
-    arm64only_target: 2,
-    decoy_typed: 1,
-    decoy_untyped: 2,
-  },
-};
+  const manifest = {
+    generated: 'by test/fixtures.mjs — do not hand-edit',
+    universal: BUILT['universal.macho'].length,
+    thin: { x86_64: BUILT['thin-x86_64.macho'].length, arm64: BUILT['thin-arm64.macho'].length },
+    arm64only: BUILT['arm64-only.macho'].length,
+    decoy: BUILT['decoy.macho'].length,
+    stripped: BUILT['stripped.macho'].length,
+    x86_64: { ...Object.fromEntries(Object.entries(x86.addresses).map(([k, v]) => [k, `0x${v.toString(16)}`])) },
+    arm64: { ...Object.fromEntries(Object.entries(arm.addresses).map(([k, v]) => [k, `0x${v.toString(16)}`])) },
+    decoyAddrs: { ...Object.fromEntries(Object.entries(decoy.addresses).map(([k, v]) => [k, `0x${v.toString(16)}`])) },
+    callCounts: {
+      universal_target: 4,
+      arm64only_target: 2,
+      decoy_typed: 1,
+      decoy_untyped: 2,
+    },
+  };
 
-const files = {};
-for (const [name, buf] of Object.entries(BUILT)) {
-  const p = path.join(OUT, name);
-  // Key on the stem without its separator, so `arm64-only.macho` is reachable
-  // as `files.arm64only` rather than `files['arm64-only']`.
-  files[name.replace('.macho', '').replace(/-/g, '')] = p;
-  if (check) {
-    const have = fs.existsSync(p) ? fs.readFileSync(p) : null;
-    if (!have || !have.equals(buf)) {
-      console.error(`fixtures: ${name} is missing or differs from what this file generates`);
-      process.exit(1);
+  const files = {};
+  for (const [name, buf] of Object.entries(BUILT)) {
+    const p = path.join(out, name);
+    // Key on the stem without its separator, so `arm64-only.macho` is reachable
+    // as `files.arm64only` rather than as `files['arm64-only']`.
+    files[name.replace('.macho', '').replace(/-/g, '')] = p;
+    if (check) {
+      const have = fs.existsSync(p) ? fs.readFileSync(p) : null;
+      if (!have || !have.equals(buf)) {
+        // Thrown rather than `process.exit`: an importer that catches this can
+        // report it in its own terms, and one that does not gets a non-zero exit
+        // from the unhandled rejection anyway. Calling `process.exit` here would
+        // kill a host process that merely imported this module.
+        throw new Error(`fixtures: ${name} is missing or differs from what this file generates`);
+      }
+    } else {
+      fs.writeFileSync(p, buf);
     }
-  } else {
-    fs.writeFileSync(p, buf);
+  }
+
+  const problems = await verify(files);
+  if (problems.length) {
+    throw new Error(
+      'fixtures: generated binaries failed their own verification:\n' +
+        problems.map((p) => `  - ${p}`).join('\n'),
+    );
+  }
+
+  const bytes = Object.values(BUILT).reduce((n, b) => n + b.length, 0);
+  const count = Object.keys(BUILT).length;
+
+  return { files, manifest, bytes, count };
+}
+
+/* ------------------------------------------------------------------ *
+ * entry point
+ * ------------------------------------------------------------------ */
+
+// Only when run directly. `import`ing this module must have no side effects:
+// someone borrowing `buildFixtures` should not find a corpus written into their
+// working tree as a side effect of the import that asked for nothing.
+/**
+ * Was this file *run*, rather than imported?
+ *
+ * The obvious comparison — `path.resolve(process.argv[1])` against
+ * `fileURLToPath(import.meta.url)` — is wrong whenever the two arrive by
+ * different routes, and the commonest route is a symlink: `npm install` of a
+ * local dependency links the package rather than copying it, so `argv[1]` is the
+ * `node_modules/...` path while Node has already resolved `import.meta.url` to
+ * the real one. The comparison then says "imported", `main` never runs, and the
+ * script exits 0 having done nothing at all.
+ *
+ * That is the worst failure available here, because it looks exactly like
+ * success. `node fixtures.mjs --check` on a drifted corpus has to fail; on a
+ * symlinked path it used to pass without looking at anything. Realpath both
+ * sides so the answer does not depend on how the file was reached.
+ */
+function invokedDirectly() {
+  if (!process.argv[1]) return false;
+  try {
+    return fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
   }
 }
 
-const problems = await verify(files);
-if (problems.length) {
-  console.error('fixtures: generated binaries failed their own verification:');
-  for (const p of problems) console.error(`  - ${p}`);
-  process.exit(1);
-}
+if (invokedDirectly()) {
+  const argv = process.argv.slice(2);
+  const check = argv.includes('--check');
 
-console.log(
-  `${check ? 'verified' : 'built'} ${Object.keys(BUILT).length} fixture(s) in ${path.relative(process.cwd(), OUT)}` +
-    `  (${Object.values(BUILT).reduce((n, b) => n + b.length, 0).toLocaleString('en-US')} bytes total)`,
-);
+  // `--out-dir` is what makes the corpus usable from a vendored copy, where
+  // writing into the package's own `test/fixtures/` is not somewhere you want a
+  // corpus appearing. `--out-dir` and `--check` combine: verify a corpus you
+  // generated somewhere else.
+  const flag = argv.indexOf('--out-dir');
+  let out = OUT;
+  if (flag !== -1) {
+    if (flag + 1 >= argv.length) {
+      console.error('fixtures: --out-dir needs a directory');
+      process.exit(2);
+    }
+    out = path.resolve(argv[flag + 1]);
+  } else {
+    const stray = argv.find((a) => a.startsWith('-') && a !== '--check');
+    if (stray) {
+      console.error(`fixtures: unknown option ${stray}`);
+      console.error('usage: node test/fixtures.mjs [--check] [--out-dir DIR]');
+      process.exit(2);
+    }
+  }
+
+  try {
+    const { bytes, count } = await buildFixtures({ check, out });
+    // `path.relative` for a directory outside the tree prints a wall of `../..`,
+    // which is harder to read than the absolute path it is abbreviating.
+    const rel = path.relative(process.cwd(), out);
+    const shown = !rel || rel.startsWith('..') ? out : rel;
+    console.log(
+      `${check ? 'verified' : 'built'} ${count} fixture(s) in ${shown}` +
+        `  (${bytes.toLocaleString('en-US')} bytes total)`,
+    );
+  } catch (err) {
+    console.error(String(err.message ?? err));
+    process.exit(1);
+  }
+}

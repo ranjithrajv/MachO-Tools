@@ -324,7 +324,7 @@ export function codeSections(thin) {
  *
  * `names` is the convenient form for substring matching. `entries` carries
  * each symbol's vaddr and defined/imported flag, which the address-oriented
- * tools (`symgrep`, `symlookup`, `symfind`) need and which a name-only
+ * tools (`sym`, `symlookup`) need and which a name-only
  * projection would throw away.
  */
 export function readSymbols(f, base, thin) {

@@ -1,0 +1,17 @@
+#compdef macho-symlookup
+#
+# zsh completion for macho-symlookup. Install as _macho-symlookup in a directory
+# on your $fpath.
+#
+# MachO-Tools 0.1.0.
+
+_macho_symlookup() {
+    _arguments -s -S \
+        '--arch=[prefer an architecture]:architecture:(x86_64 arm64)' \
+        '(-b --binary)'{-b,--binary}'[the binary or bundle to read]:Mach-O file or bundle:_files' \
+        '--json[write one JSON object to stdout]' \
+        '(-h --help)'{-h,--help}'[show usage]' \
+        '*:hexadecimal address (with 0x): '
+}
+
+_macho_symlookup "$@"

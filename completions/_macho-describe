@@ -1,0 +1,17 @@
+#compdef macho-describe
+#
+# zsh completion for macho-describe. Install as _macho-describe in a directory
+# on your $fpath.
+#
+# MachO-Tools 0.1.0.
+
+_macho_describe() {
+    _arguments -s -S \
+        '(-b --binary)'{-b,--binary}'[the binary or bundle to read]:Mach-O file or bundle:_files' \
+        '--json[write one JSON object to stdout]' \
+        '(-h --help)'{-h,--help}'[show usage]' \
+        '1:Mach-O file or bundle:_files' \
+        '*:: :->args'
+}
+
+_macho_describe "$@"
