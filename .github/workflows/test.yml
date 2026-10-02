@@ -1,0 +1,69 @@
+# Verify the tools on every platform Node runs on.
+#
+# The reason this file exists at all is that the test suite used to depend on
+# which binaries happened to be installed on the machine running it. On a bare
+# CI runner it found none of them, exited 2, and "checked nothing" looked exactly
+# like "failed". The generated fixture corpus is what makes a green run mean
+# something, so CI is where it has to be exercised — including on the platforms
+# whose system binaries cannot possibly be present.
+#
+# Three jobs, deliberately:
+#
+#   fixtures  — build the corpus and confirm the checked-in binaries match what
+#               the generator produces. A stale or hand-edited fixture is a test
+#               that no longer tests, and it would otherwise go unnoticed.
+#   test      — the suite, on macOS, Linux and Windows.
+#   mutation  — prove the suite fails when the reader is broken. Slow, and the
+#               job most likely to rot, so it runs on its own rather than
+#               blocking every push's test job.
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  fixtures:
+    name: fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: The checked-in fixtures match the generator
+        run: node test/fixtures.mjs --check
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is here for a specific reason: the reader claims to be
+        # platform-independent, and the only way to keep that claim honest is to
+        # run it where there is no /usr/bin to fall back on. The system-binary
+        # half of the suite skips there; the fixture half is the whole point.
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build the fixture corpus
+        run: node test/fixtures.mjs
+      - name: Run the suite
+        run: node test/smoke.mjs
+
+  mutation:
+    name: mutation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Confirm the suite fails when the reader is broken
+        run: node test/mutation-check.mjs

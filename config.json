@@ -1,0 +1,32 @@
+{
+  "$comment": [
+    "Shipped defaults for macho-tools. Every value here is a site-specific fact",
+    "rather than a property of the Mach-O format, which is why it is data.",
+    "Override wholesale by setting MACHO_CONFIG=/path/to/your.json."
+  ],
+
+  "$comment.override": {
+    "explicit": "MACHO_CONFIG=/path/to/your.json",
+    "noRepoLocal": "there is deliberately no cwd walk-up: these tools are run as CLIs from anywhere, and a config found by accident in an unrelated directory is worse than no config"
+  },
+
+  "bundle": {
+    "$comment": "the macOS application-bundle convention. macosDir is an array of path segments so it is composed with path.join rather than a hardcoded separator.",
+    "ext": ".app",
+    "macosDir": ["Contents", "MacOS"]
+  },
+
+  "fallback": {
+    "$comment": "last-resort target for a bare invocation: a Mach-O that exists on every machine this runs on, so a tool prints something useful rather than a usage error. null on platforms with no such guarantee. Overridable per run with MACHO_BINARY.",
+    "unix": "/bin/ls",
+    "win32": null
+  },
+
+  "scan": {
+    "$comment": "buffer chunking for whole-file searches. These are performance knobs, not correctness: chunk and overlap change how fast a search runs, never what it finds.",
+    "chunkBytes": 16777216,
+    "overlapBytes": 64,
+    "perNeedle": 4,
+    "minExecutableBytes": 1024
+  }
+}

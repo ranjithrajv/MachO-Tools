@@ -1,0 +1,59 @@
+{
+  "name": "MachO-Tools",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Mach-O binary introspection: fat-header and symbol-table reading, vaddr lookup, direct-call xrefs, literal-to-address mapping. Knows nothing about any application.",
+  "keywords": [
+    "mach-o",
+    "macho",
+    "universal-binary",
+    "binary-analysis",
+    "reverse-engineering",
+    "arm64",
+    "x86-64",
+    "fat-binary",
+    "symbol-table"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ranjithrajv/MachO-Tools.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ranjithrajv/MachO-Tools/issues"
+  },
+  "homepage": "https://github.com/ranjithrajv/MachO-Tools#readme",
+  "author": "ranjithrajv",
+  "license": "LGPL-3.0-or-later",
+  "main": "src/api.mjs",
+  "exports": {
+    ".": "./src/api.mjs",
+    "./macho": "./src/macho.mjs",
+    "./package.json": "./package.json"
+  },
+  "types": "src/api.d.ts",
+  "files": [
+    "src",
+    "config.json",
+    "COPYING",
+    "LICENSE",
+    "README.md"
+  ],
+  "bin": {
+    "macho-describe": "src/describe.mjs",
+    "macho-symgrep": "src/symgrep.mjs",
+    "macho-symfind": "src/symfind.mjs",
+    "macho-symlookup": "src/symlookup.mjs",
+    "macho-findcall": "src/findcall.mjs",
+    "macho-findliteral": "src/findliteral.mjs",
+    "macho-mapliteral": "src/mapliteral.mjs"
+  },
+  "scripts": {
+    "test": "node test/smoke.mjs",
+    "test:fixtures": "node test/fixtures.mjs",
+    "test:mutation": "node test/mutation-check.mjs",
+    "test:all": "npm run test:fixtures && npm test && npm run test:mutation"
+  },
+  "engines": {
+    "node": ">=22.15"
+  }
+}

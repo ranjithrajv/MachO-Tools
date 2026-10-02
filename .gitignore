@@ -1,0 +1,17 @@
+# Dependencies. There are none, and there should never be any: a dependency-free
+# parser is the property most of this package's appeal rests on, so `node_modules`
+# showing up here should be treated as a bug rather than a normal install step.
+
+node_modules/
+npm-debug.log*
+
+# Scratch from the suites. Both write only under `os.tmpdir()`, but a mutation
+# check that crashed mid-run could leave a `mutcheck-*` directory behind if the
+# temp root were redirected.
+mutcheck-*
+.tw-*
+
+# Editor and OS.
+.DS_Store
+*.swp
+*~

@@ -1,0 +1,475 @@
+/**
+ * Type declarations for MachO-Tools.
+ *
+ * Hand-written rather than generated, and deliberately small.
+ *
+ * `allowJs` + `checkJs` would infer most of this, but inference for a library is
+ * a liability: it describes what the code happens to do rather than what it
+ * promises, so an internal refactor silently changes the public types and every
+ * consumer's build breaks without anyone editing a `.d.ts`. These declarations
+ * are the contract, and they are allowed to be narrower than the implementation.
+ *
+ * Addresses are `bigint` throughout. A 64-bit virtual address does not survive a
+ * JavaScript `number` — anything above 2^53 loses its low bits — and a type that
+ * said `number` would push every caller into a silent precision loss. JSON output
+ * renders them as `"0x..."` strings for the same reason.
+ */
+
+/** A 64-bit virtual address or file offset. */
+export type Vaddr = bigint;
+
+/** Mach-O and fat-header magic numbers. */
+export const MH_MAGIC_64: number;
+export const MH_MAGIC_32: number;
+export const FAT_MAGIC: number;
+export const FAT_CIGAM: number;
+
+/** CPU types this reader names. */
+export const CPU_X86_64: number;
+export const CPU_ARM64: number;
+
+/** Load commands and symbol-type masks the reader inspects. */
+export const LC_SEGMENT: number;
+export const LC_SEGMENT_64: number;
+export const LC_SYMTAB: number;
+export const N_STAB: number;
+export const N_TYPE: number;
+export const N_SECT: number;
+
+/** Section attribute bits that mark a section as containing instructions. */
+export const S_ATTR_PURE_INSTRUCTIONS: number;
+export const S_ATTR_SOME_INSTRUCTIONS: number;
+
+/** The four Mach-O magic byte sequences, compared as bytes. */
+export const MACHO_MAGICS: Buffer[];
+
+/** Standard exit codes, matching `EXIT` in the implementation. */
+export declare const EXIT: {
+  readonly ok: 0;
+  /** The tool ran and found nothing — deliberately not an error. */
+  readonly empty: 1;
+  readonly usage: 2;
+  readonly fail: 3;
+};
+
+/** A bounded, cached reader over an open file. */
+export interface Opener {
+  /** The underlying file descriptor. */
+  fd: number;
+  /** File size in bytes. */
+  size: number;
+  /** The path this handle was opened from. */
+  path: string;
+  /**
+   * Read `len` bytes at absolute file offset `off`. Short reads are returned
+   * as-is and never padded, so a read past the end is a zero-length buffer
+   * rather than an error.
+   */
+  read(off: number, len: number): Buffer;
+  close(): void;
+}
+
+/** Open a file and return a bounded reader with a small read cache. */
+export declare function opener(path: string): Opener;
+
+/** True when `p` is a readable file whose first four bytes are a Mach-O magic. */
+export declare function isMachOFile(p: string): boolean;
+
+/** A human name for a CPU type, falling back to its raw value. */
+export declare function sliceName(cputype: number | null): string;
+
+/** One entry of a fat header. */
+export interface FatSlice {
+  cputype: number;
+  /** Byte offset of this slice within the *file*. */
+  offset: number;
+  size: number;
+}
+
+/** A slice with its parse result attached. */
+export interface Slice extends FatSlice {
+  /** True when the file is a single-architecture Mach-O rather than fat. */
+  thin: boolean;
+}
+
+/** A parsed segment. `vmaddr`/`vmsize` are BigInt because they are 64-bit. */
+export interface Segment {
+  segname: string;
+  vmaddr: bigint;
+  vmsize: bigint;
+  fileoff: bigint;
+  filesize: bigint;
+}
+
+/**
+ * A parsed section.
+ *
+ * `offset` is relative to the start of its **slice**, not the start of the file.
+ * Reading a section therefore requires the slice's file offset as well; see
+ * `codeSections` and the API functions, which handle that.
+ */
+export interface Section {
+  sectname: string;
+  segname: string;
+  addr: bigint;
+  size: number;
+  offset: number;
+  /** Section attributes, as of `section_64`. */
+  flags: number;
+}
+
+/** A parsed `LC_SYMTAB`. */
+export interface Symtab {
+  symoff: number;
+  nsyms: number;
+  stroff: number;
+  strsize: number;
+}
+
+/** A parsed thin Mach-O header plus its load-command tables. */
+export interface Thin {
+  is64: boolean;
+  cputype: number;
+  segments: Segment[];
+  sections: Section[];
+  symtab: Symtab | null;
+}
+
+/** One symbol-table entry. */
+export interface SymbolEntry {
+  name: string;
+  addr: bigint;
+  /** True for `N_SECT` symbols — defined here, as opposed to imported. */
+  defined: boolean;
+}
+
+/** The result of reading a symbol table. Every key is always present. */
+export interface Symbols {
+  names: string[];
+  entries: SymbolEntry[];
+  /** How many entries are defined in this slice. */
+  defined: number;
+  total: number;
+  /** Why the list is empty, when it is. `null` when it is not. */
+  note: string | null;
+}
+
+/** Parse a fat header into its slices, or `null` when this is not a fat binary. */
+export declare function parseFat(f: Opener): FatSlice[] | null;
+
+/** Parse the load commands of the thin Mach-O at `base`. */
+export declare function parseThin(f: Opener, base?: number): Thin | null;
+
+/** Every slice of a binary, fat or thin. */
+export declare function slicesOf(f: Opener): Slice[];
+
+/** The `__TEXT` section of a parsed slice, which is where literals live. */
+export declare function textSection(thin: Thin): Section | null;
+
+/** True when a section's attributes mark it as containing instructions. */
+export declare function isCodeSection(sec: Section): boolean;
+
+/**
+ * The sections of a slice that hold code.
+ *
+ * `fallback` is true when the slice marked no section as instructions, in which
+ * case every non-empty section is returned — an unusual input where reporting
+ * zero call sites would be worse than an untyped scan.
+ */
+export declare function codeSections(thin: Thin): {
+  sections: Section[];
+  fallback: boolean;
+};
+
+/** Read every symbol in a slice, defined and imported, counted apart. */
+export declare function readSymbols(f: Opener, base: number, thin: Thin): Symbols;
+
+/** The slice with the most symbols — the one most worth probing. */
+export declare function richestSlice(f: Opener): (Slice & {
+  arch: string;
+  thin: Thin;
+  names: string[];
+  nsyms: number;
+  ndefined: number;
+  stripped: boolean | string;
+  symNote: string | null;
+}) | null;
+
+/**
+ * The byte offset of the slice a tool should read.
+ *
+ * `prefer` is a preference, not a requirement: a named architecture that is
+ * absent falls back to the richest slice rather than returning null.
+ */
+export declare function preferredSlice(
+  f: Opener,
+  prefer?: string,
+): { offset: number; arch: string; nsyms: number; thin: Thin; size: number } | null;
+
+/** Map a file offset to a vaddr within a parsed slice, or null if unmapped. */
+export declare function toVaddr(
+  thin: Thin,
+  fileOff: number,
+): { vaddr: bigint; section: string } | null;
+
+/** The section containing a slice-relative file offset, or null. */
+export declare function sectionOf(thin: Thin, fileOff: number): Section | null;
+
+/** True when `vaddr` falls inside anything this slice maps. */
+export declare function coversAddress(thin: Thin, vaddr: Vaddr): boolean;
+
+/** Find a byte string inside a section, stopping early per needle. */
+export declare function findInSection(
+  f: Opener,
+  sec: Section,
+  needles: string[],
+  opts?: { perNeedle?: number; chunk?: number; overlap?: number; sliceBase?: number },
+): { hits: Map<string, Array<{ off: number; vaddr: bigint; section: string; ctx: string }>>; scanned: number; available: boolean };
+
+/* ------------------------------------------------------------------ *
+ * the supported API
+ * ------------------------------------------------------------------ */
+
+/** Open a binary, hand it to `fn`, close it afterwards. */
+export declare function withFile<T>(path: string, fn: (f: Opener) => T): T;
+
+/** What is in this file: every slice, with architecture, extent and symbol counts. */
+export declare function describe(path: string): {
+  path: string;
+  size: number;
+  /** True when the file holds more than one slice. */
+  fat: boolean;
+  slices: Array<{
+    arch: string;
+    offset: number;
+    size: number;
+    thin: boolean;
+    readable: boolean;
+    bits: 64 | 32 | undefined;
+    nsyms: number;
+    defined: number;
+    note: string | null;
+    textAddr: bigint | null;
+    textSize: number;
+    codeSections: number;
+  }>;
+};
+
+/** Regex over a slice's symbol table. `definedOnly` defaults to true. */
+export declare function grepSymbols(
+  path: string,
+  pattern: string,
+  opts?: { arch?: string; flags?: string; definedOnly?: boolean },
+): {
+  arch: string;
+  pattern: string;
+  flags: string;
+  matches: SymbolEntry[];
+  defined: number;
+  total: number;
+  note: string | null;
+};
+
+/**
+ * Substring over a symbol table, deduplicated and address-ordered.
+ *
+ * `unique: false` returns one entry per address instead of one per name.
+ */
+export declare function findSymbols(
+  path: string,
+  substring: string,
+  opts?: { arch?: string; max?: number; unique?: boolean },
+): {
+  arch: string;
+  substring: string;
+  matches: SymbolEntry[];
+  count: number;
+  uniqueCount: number;
+  truncated: boolean;
+  defined: number;
+  total: number;
+  note: string | null;
+};
+
+/**
+ * Which function contains a virtual address.
+ *
+ * Only defined, address-bearing symbols are considered. `function` is null with
+ * a `note` when nothing resolves — a negative answer, not an error.
+ */
+export declare function lookupAddress(
+  path: string,
+  vaddr: Vaddr,
+  opts?: { arch?: string },
+): {
+  arch: string;
+  vaddr: bigint;
+  function: string | null;
+  start: bigint | null;
+  next: bigint | null;
+  offset: bigint | null;
+  size: bigint | null;
+  note: string | null;
+};
+
+/** The direct-call encoding for an architecture, or null if unknown. */
+export declare function callEncoding(arch: string): 'x86 rel32' | 'arm64 BL' | null;
+
+/** One direct call or jump that resolves to a target address. */
+export interface CallSite {
+  addr: bigint;
+  kind: 'call' | 'jmp' | 'BL';
+  arch: string;
+  /** The section the instruction was found in. */
+  section: string;
+}
+
+/** Per-slice accounting for a call scan. */
+export interface CallSliceReport {
+  arch: string;
+  encoding: 'x86 rel32' | 'arm64 BL';
+  /** True when only instruction-flagged sections were scanned. */
+  typed: boolean;
+  /** True when the slice flagged no section as instructions at all. */
+  untypedFallback: boolean;
+  sections: Array<{ name: string; addr: bigint; size: number }>;
+  scanned: number;
+  skipped: string | null;
+}
+
+/**
+ * Direct `call`/`jmp` sites resolving to `target`, across every slice.
+ *
+ * Typed by default: only sections whose attributes mark them as instructions
+ * are scanned. `includeData` widens to every non-empty section. Either way,
+ * indirect calls are invisible — they do not encode their target.
+ */
+export declare function findCalls(
+  path: string,
+  target: Vaddr,
+  opts?: { arch?: string; includeData?: boolean; max?: number },
+): {
+  target: bigint;
+  hits: CallSite[];
+  count: number;
+  truncated: boolean;
+  scanned: number;
+  slices: CallSliceReport[];
+  /** Architectures whose call encoding is not implemented. */
+  unsupported: string[];
+  typed: boolean;
+};
+
+/**
+ * The distinct addresses a binary calls or jumps to directly.
+ *
+ * The inversion of `findCalls`, and the only way to tell a working scanner from
+ * a dead one: both produce an empty caller list for one address, but only one
+ * produces an empty target list for a whole binary.
+ */
+export declare function listCallTargets(
+  path: string,
+  opts?: { arch?: string; includeData?: boolean; minSites?: number },
+): {
+  targets: Array<{ dest: bigint; sites: number }>;
+  total: number;
+  scanned: number;
+  slices: Array<{
+    arch: string;
+    encoding: 'x86 rel32' | 'arm64 BL';
+    typed: boolean;
+    untypedFallback: boolean;
+    scanned: number;
+  }>;
+  unsupported: string[];
+  typed: boolean;
+};
+
+/** Printable context around a file offset. */
+export interface Context {
+  pre: string;
+  /** The file offset `pre` starts at. */
+  preFrom: number;
+  hit: string;
+}
+
+/**
+ * Find a byte literal.
+ *
+ * The whole file by default; `textOnly` restricts to `__TEXT`, which is much
+ * cheaper when you already know it is there.
+ */
+export declare function findLiteral(
+  path: string,
+  literal: string | Buffer,
+  opts?: { textOnly?: boolean; max?: number },
+): {
+  literal: string;
+  hex: string;
+  hits: Array<{
+    off: number;
+    slice: string;
+    inText: boolean;
+    vaddr: bigint | null;
+    section: string | null;
+    context: Context;
+  }>;
+  count: number;
+  truncated: boolean;
+  scanned: number;
+  slices: Array<{
+    arch: string; offset: number; size: number;
+    from: number; to: number; hits: number;
+  }>;
+  textOnly: boolean;
+};
+
+/**
+ * Map a literal to its addresses, then find what points at those addresses.
+ *
+ * The literal search is per-slice; the pointer search is whole-file, so a
+ * pointer can be reported in a slice other than the one whose literal was mapped.
+ * `offsets` overrides the literal search, for magics assembled at runtime.
+ */
+export declare function mapLiteral(
+  path: string,
+  literal: string,
+  opts?: { arch?: string; offsets?: number[] | null; maxPointers?: number },
+): {
+  literal: string;
+  hex: string;
+  arch: string;
+  sliceOffset: number;
+  /** True when `offsets` was supplied rather than searching for the literal. */
+  explicit: boolean;
+  locations: Array<{
+    off: number;
+    vaddr: bigint;
+    section: string | null;
+    context: Context;
+    fileExtent: { offset: number; size: number } | null;
+    pointers: Array<{
+      off: number;
+      slice: string | null;
+      vaddr: bigint | null;
+      section: string | null;
+    }> | null;
+    pointerCount: number;
+    pointersTruncated: boolean;
+  }>;
+  unmapped: Array<{ off: number }>;
+  slices: Array<{
+    arch: string; offset: number; size: number; inText: number; nsyms: number;
+  }>;
+};
+
+/**
+ * Find every occurrence of `needle` in the absolute file range `[from, to)`.
+ *
+ * Chunked with a carry window, so a match straddling a chunk boundary is not
+ * dropped.
+ */
+export declare function searchRange(f: Opener, needle: Buffer, from: number, to: number): number[];
+
+/** Printable context around an absolute file offset. */
+export declare function contextAround(f: Opener, off: number, preLen?: number, hitLen?: number): Context;
