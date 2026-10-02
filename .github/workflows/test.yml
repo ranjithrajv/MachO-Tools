@@ -30,13 +30,19 @@ on:
   pull_request:
   workflow_dispatch:
 
+# `checkout` and `setup-node` are pinned to v7, the first major that runs on the
+# `node24` runtime. v4 still works, but it warns on every run that it targets
+# Node 20 and is being force-upgraded — noise in a log whose only job is to make
+# a failure legible. `checkout@v7` needs Actions Runner ≥ v2.327.1, which every
+# GitHub-hosted runner is; a fork on an old self-hosted runner would stay on v6.
+
 jobs:
   fixtures:
     name: fixtures
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
       - name: The checked-in fixtures match the generator
@@ -54,8 +60,8 @@ jobs:
         # half of the suite skips there; the fixture half is the whole point.
         os: [macos-latest, ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
       - name: Build the fixture corpus
@@ -67,8 +73,8 @@ jobs:
     name: mutation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
       - name: Confirm the suite fails when the reader is broken
