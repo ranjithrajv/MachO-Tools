@@ -421,6 +421,72 @@ function stripped() {
   return thinMachO({ cputype: CPU_X86_64, text: c.text, data: c.data, symbols: [] });
 }
 
+/**
+ * How many bulk symbols the populated fixture carries.
+ *
+ * Coupled to `POPULATED_FLOOR` in `smoke.mjs`, which is what decides whether the
+ * suite calls a binary "populated": 50 defined symbols. Sixty clears it by a
+ * margin rather than sitting on the line, so a later tweak to either number
+ * cannot silently flip this fixture into the stub bucket — which is exactly what
+ * happened before it existed. The floor is repeated, not imported, for the same
+ * reason the Mach-O constants above are written out: the builder must be an
+ * independent witness, and importing it would run the suite.
+ */
+const POPULATED_FILLERS = 60;
+
+/**
+ * The *populated* shape: a binary with a real symbol table.
+ *
+ * The suite draws a line at 50 defined symbols and asserts that both sides of it
+ * were tested, because the two shapes fail differently: the import bug only shows
+ * on a symbol-less stub, while a binary with 19,000 symbols hides it completely.
+ * That assertion used to be a fact about the machine rather than about the corpus.
+ * Every other fixture here has between 0 and 4 defined symbols, so on a CI runner
+ * — where the candidate binaries are absent or are shared-cache stubs carrying one
+ * symbol each — the populated side was missing and the coverage receipt failed on
+ * ubuntu, macos and windows alike.
+ *
+ * So the shape is built rather than hoped for. The code is `codeFixture`'s,
+ * unchanged: the same three functions, the same two call sites, the same planted
+ * literal. Only the symbol table is bulked out, with names and addresses a
+ * reviewer can compute from the loop below. The two imports come along for free
+ * from the shared symbol list, which is what makes this fixture the strongest
+ * test of them: a low address must still resolve to no function at all when the
+ * table around it holds sixty-four entries.
+ */
+function populatedFixture() {
+  const c = codeFixture(CPU_X86_64);
+  const TEXT_SIZE = c.text.length;
+
+  // The four offsets `codeFixture` already claims: the two callers, the target,
+  // and the search literal. Skipped rather than overwritten, so no filler address
+  // can alias a planted call site or the literal — an alias would make
+  // "exactly two call sites" and "exactly one name contains this address" both
+  // wrong for reasons that have nothing to do with the tools.
+  const CLAIMED = new Set([0x40, 0x80, 0x100, 0x120]);
+
+  const fillers = [];
+  for (let off = 0x08; off < TEXT_SIZE && fillers.length < POPULATED_FILLERS; off += 4) {
+    if (CLAIMED.has(off)) continue;
+    fillers.push(c.addresses.text + BigInt(off));
+  }
+
+  return {
+    text: c.text,
+    data: c.data,
+    symbols: [
+      ...c.symbols,
+      ...fillers.map((value, i) => ({
+        name: `_pop_${String(i).padStart(2, '0')}`,
+        type: N_SECT | N_EXT,
+        sect: 1,
+        value,
+      })),
+    ],
+    addresses: { ...c.addresses, fillers },
+  };
+}
+
 /* ------------------------------------------------------------------ *
  * verification
  * ------------------------------------------------------------------ */
@@ -579,6 +645,53 @@ async function verify(files) {
   const sc = findCalls(files.stripped, targetD);
   expect(sc.count >= 1, 'stripped: findcall still works without symbols');
 
+  // Populated: the shape the corpus used to borrow from whatever the machine had
+  // installed. Every number here is computed by `populatedFixture()` above rather
+  // than written down twice, so the fixture and its assertions cannot drift.
+  const p = populatedFixture();
+  const dp = describe(files.populated);
+  expect(!dp.fat && dp.slices.length === 1, 'populated: is thin');
+  expect(
+    p.addresses.fillers.length === POPULATED_FILLERS,
+    `populated: carries ${POPULATED_FILLERS} bulk symbols (got ${p.addresses.fillers.length})`,
+  );
+  expect(
+    dp.slices[0].defined === POPULATED_FILLERS + 4,
+    `populated: ${POPULATED_FILLERS} bulk + 4 named symbols are all defined (got ${dp.slices[0].defined})`,
+  );
+  expect(
+    dp.slices[0].nsyms === POPULATED_FILLERS + 6,
+    `populated: ${POPULATED_FILLERS} + 4 defined + 2 imports (got ${dp.slices[0].nsyms})`,
+  );
+  // The floor is the suite's, not this file's; the point is that the corpus
+  // satisfies it on a machine with no binaries installed at all.
+  expect(
+    dp.slices[0].defined > 50,
+    `populated: clears smoke.mjs's POPULATED_FLOOR of 50 (got ${dp.slices[0].defined})`,
+  );
+  // A bulk symbol sitting on a planted call site would alias two names to one
+  // address, which is legal in a Mach-O and wrong for every assertion here.
+  expect(
+    p.addresses.fillers.every((a) => ![0x40n, 0x80n, 0x100n, 0x120n].some((o) => a === p.addresses.text + o)),
+    'populated: no bulk symbol aliases a call site or the literal',
+  );
+  expect(
+    lookupAddress(files.populated, p.addresses.fillers[0]).function === '_pop_00',
+    'populated: the lowest bulk symbol resolves by name',
+  );
+  expect(
+    lookupAddress(files.populated, p.addresses.fillers.at(-1)).function === '_pop_59',
+    'populated: the highest bulk symbol resolves by name',
+  );
+  expect(
+    lookupAddress(files.populated, 0x10).function === null,
+    'populated: a low address is still not attributed to an import at 0x0',
+  );
+  expect(
+    findCalls(files.populated, p.addresses.target).count === 2,
+    'populated: both encoded call sites still resolve beside a full symbol table',
+  );
+
   return problems;
 }
 
@@ -643,6 +756,7 @@ export async function buildFixtures({ out = OUT, check = false } = {}) {
   const x86 = codeFixture(CPU_X86_64);
   const arm = codeFixture(CPU_ARM64);
   const decoy = decoyFixture();
+  const populated = populatedFixture();
 
   const BUILT = {
     'universal.macho': universal(),
@@ -651,6 +765,7 @@ export async function buildFixtures({ out = OUT, check = false } = {}) {
     'arm64-only.macho': thinMachO({ cputype: CPU_ARM64, text: arm.text, data: arm.data, symbols: arm.symbols }),
     'decoy.macho': thinMachO({ cputype: CPU_X86_64, text: decoy.text, data: decoy.data, symbols: decoy.symbols, textFlags: decoy.textFlags }),
     'stripped.macho': thinMachO({ cputype: CPU_X86_64, text: x86.text, data: x86.data, symbols: [] }),
+    'populated.macho': thinMachO({ cputype: CPU_X86_64, text: populated.text, data: populated.data, symbols: populated.symbols }),
   };
 
 // Addresses are written alongside the binaries, because the suite's assertions
@@ -664,9 +779,16 @@ export async function buildFixtures({ out = OUT, check = false } = {}) {
     arm64only: BUILT['arm64-only.macho'].length,
     decoy: BUILT['decoy.macho'].length,
     stripped: BUILT['stripped.macho'].length,
+    populated: BUILT['populated.macho'].length,
     x86_64: { ...Object.fromEntries(Object.entries(x86.addresses).map(([k, v]) => [k, `0x${v.toString(16)}`])) },
     arm64: { ...Object.fromEntries(Object.entries(arm.addresses).map(([k, v]) => [k, `0x${v.toString(16)}`])) },
     decoyAddrs: { ...Object.fromEntries(Object.entries(decoy.addresses).map(([k, v]) => [k, `0x${v.toString(16)}`])) },
+    populatedAddrs: {
+      bulk: POPULATED_FILLERS,
+      defined: POPULATED_FILLERS + 4,
+      first: `0x${populated.addresses.fillers[0].toString(16)}`,
+      last: `0x${populated.addresses.fillers.at(-1).toString(16)}`,
+    },
     callCounts: {
       universal_target: 4,
       arm64only_target: 2,

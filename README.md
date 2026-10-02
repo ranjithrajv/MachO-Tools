@@ -7,6 +7,12 @@ Mach-O binary introspection. Reads fat headers, symbol tables, sections and
 of. **It knows nothing about any application** — no formats, no products, no
 save files. Everything here is a fact about the file format or about the bytes.
 
+**Mach-O is the whole scope, chosen.** This is a tool built around one format,
+not a toolkit that happens to include one. Every fat-header case, every
+slice-relative offset, every bug in the history below is a Mach-O fact, and that
+specialisation is what pays for the depth. ELF, PE, Android APKs and Windows
+binaries are out of scope by design — see **What this will not do**.
+
 ```sh
 node src/describe.mjs /usr/local/go/bin/go       # what is in this file?
 node src/sym.mjs 'runtime.main' /usr/local/go/bin/go
@@ -33,7 +39,7 @@ reproducible on a clean checkout, offline, with nothing installed.**
 git clone https://github.com/ranjithrajv/MachO-Tools && cd MachO-Tools
 
 node test/fixtures.mjs --check    #  ~0.1s   the corpus matches its generator
-node test/smoke.mjs               #  ~4s     191 passed, 1 skipped
+node test/smoke.mjs               #  ~4s     202 passed, 1 skipped
 node test/mutation-check.mjs      #  ~2m     7 mutations, 7 caught
 ```
 
@@ -48,8 +54,8 @@ Those three numbers are the asset, and each one is a different kind of evidence:
 
 | | What it establishes | Why it is not a normal test suite |
 |---|---|---|
-| `fixtures --check` | The corpus is intact | A hand-edited or stale fixture is a test that has stopped testing, while still passing. This re-derives all 37,329 bytes and compares them |
-| `191 passed` | The tools work on binaries they were not written for | Every assertion is pinned to a *known* input. Six are generated, and the rest run against whatever `/usr/bin` has — and the suite asserts its own coverage: both architectures, symbol-less and populated, every shape the seven historical defects needed |
+| `fixtures --check` | The corpus is intact | A hand-edited or stale fixture is a test that has stopped testing, while still passing. This re-derives all 39,568 bytes and compares them |
+| `202 passed` | The tools work on binaries they were not written for | Every assertion is pinned to a *known* input. Seven are generated, and the rest run against whatever `/usr/bin` has — and the suite asserts its own coverage: both architectures, symbol-less and populated, every shape the seven historical defects needed |
 | `7 caught` | The tests would notice | Each mutation reintroduces one real historical bug into a copy of the tree and requires the suite to fail. **An inconclusive mutation fails the run**, because a mutation that could not be applied once reported green while quietly reducing the count |
 
 The last row is the one worth pausing on. A suite that has never been shown to
@@ -88,8 +94,8 @@ Concretely, reach for something else when:
   code signing, fixups, export tries and Objective-C/Swift metadata; this reads
   fat headers, sections, symbols and code bytes, and knows nothing else;
 - you want **several file formats** — LIEF covers ELF, PE and Mach-O in one
-  dependency. This is Mach-O only, and adding ELF would make it worse at the one
-  thing it is for;
+  dependency. Mach-O is this project's whole scope, so ELF is a different
+  project to reach for rather than a feature missing here;
 - you want to **know what code does** — Ghidra is free and needs no licence
   server. Nothing here replaces a decompiler, and the tools are built to hand
   work *to* one;
@@ -151,7 +157,7 @@ much time:
 | **Resolve indirect / PLT calls** | The target is not in the instruction. Producing it means decoding the stream, which is the disassembler again. A wrong edge here would be worse than a missing one — it would look like a call graph |
 | **Read dSYM / DWARF** | A different file format, a different maintenance burden, and a large amount of code for the minority of binaries whose symbols are in a sidecar |
 | **Parse ObjC/Swift metadata** | MachOKit does this properly and is better at it. Duplicating it is the clearest possible way to become a worse MachOKit |
-| **ELF or PE** | Every format fact here is Mach-O's. Portability was achieved by making the reader portable, not by making it a format zoo |
+| **ELF or PE** | Mach-O is the focus, not the first of four. Depth in one format beats breadth across several: every fact in this reader is Mach-O's, and portability was achieved by making the reader portable, not by making it a format zoo |
 | **Code signing, fixups, export tries** | Same reasoning as the above: LIEF and `codesign` cover them, and none of them changes which function a vaddr lands in |
 
 The test for anything on this list is not "is it hard" — indirect call
@@ -616,11 +622,15 @@ failed is worth recording:
 
 ## Limits
 
-These are the ones that matter, stated rather than discovered:
+These are the ones that matter, stated rather than discovered. The first is the
+exception, and only in framing: **Mach-O is the project's focus, not a gap in
+it.**
 
-- **Mach-O only.** Android APKs, iOS bundles and Windows PE need a different
-  reader; nothing here will parse them. This is a scope decision, not a gap to
-  be closed later.
+- **One format, on purpose.** Mach-O is what this package is for, not the only
+  format it has not got round to yet — see **What this will not do**. Android
+  APKs, iOS bundles and Windows PE need a different reader and always will; a
+  reader that also spoke ELF and PE would spread the same limited attention
+  across four formats and be shallower in all of them.
 - **Direct calls only.** Indirect calls, register calls and jumps through a PLT
   stub do not encode their target in the instruction, so they do not appear in
   `findcall`. Every hit is a site *worth disassembling*, not a proven call-graph

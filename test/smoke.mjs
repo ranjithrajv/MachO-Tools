@@ -761,12 +761,20 @@ for (const b of binaries) {
   // supposed to be there on every machine, so a gap in it is a gap in the suite
   // rather than a gap in one machine's /usr/bin.
   const stems = new Set(generated.map((b) => b.stem));
-  for (const want of ['universal', 'arm64-only', 'decoy', 'stripped']) {
+  for (const want of ['universal', 'arm64-only', 'decoy', 'stripped', 'populated']) {
     check(stems.has(want), `coverage: the ${want} fixture was present and tested`,
       stems.has(want) ? '' : `missing — the whole run should have been a no-op, not a pass`);
   }
 
-  const kinds = new Set(binaries.map((b) => b.kind));
+  // The *generated* corpus, not `binaries`. Both halves of this assertion used to
+  // be read from whatever the machine had installed, which made it a receipt for
+  // one machine's /usr/bin: every other fixture here carries between 0 and 4
+  // defined symbols, so on a runner whose candidate paths are absent (Linux,
+  // Windows) or are shared-cache stubs with a single symbol each (macOS) the
+  // populated half vanished and this check failed on all three platforms — the
+  // run was fine, the *promise* was not. `populated.macho` is in the corpus so
+  // this can be asserted against files that are always there.
+  const kinds = new Set(generated.map((b) => b.kind));
   check(
     kinds.has('stub') && kinds.has('populated'),
     'coverage: both a symbol-less binary and a populated one were tested',
@@ -790,6 +798,7 @@ for (const b of binaries) {
     'a binary with no x86_64 slice at all': generated.some((b) => b.stem === 'arm64-only'),
     'code and data in one segment': generated.some((b) => b.stem === 'decoy'),
     'a binary with no symbol table': generated.some((b) => b.stem === 'stripped'),
+    'a binary with a full symbol table': generated.some((b) => b.stem === 'populated'),
   };
   const have = Object.entries(shapes).filter(([, v]) => v).map(([k]) => k);
   check(
