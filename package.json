@@ -41,7 +41,8 @@
     "config.json",
     "COPYING",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "CONTRIBUTING.md"
   ],
   "man": [
     "man/man1/macho-describe.1",
