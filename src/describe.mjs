@@ -27,7 +27,7 @@
  * the data that an untyped scan used to report as call sites.
  */
 import { requireBinary, FALLBACK_TARGET } from './target.mjs';
-import { isCodeSection } from './macho.mjs';
+import { isCodeSection, archMatches } from './macho.mjs';
 import { describe } from './api.mjs';
 import { parseArgs, emitJSON, usage, count, EXIT, rejectUnknownFlags } from './output.mjs';
 
@@ -90,7 +90,12 @@ if (stripped.length && r.slices.length > 1) {
 const wantArch = opts.arch;
 if (wantArch && r.slices.length > 1) {
   const all = r.slices.map((s) => s.arch).join(', ');
-  const match = r.slices.find((s) => s.arch === wantArch);
+  // `archMatches`, not `===`. Naming arm64e as its own architecture made this
+  // `===` a live bug: `--arch=arm64` against a binary whose arm64 slice is
+  // arm64e reported "matched none of the slices" and then showed all of them,
+  // which is worse than the old silent-wrong-slice answer because it looks like
+  // it checked. `archMatches` is the same rule every other `--arch` path uses.
+  const match = r.slices.find((s) => archMatches(s.arch, wantArch));
   if (!match) {
     notes.push(`--arch=${wantArch} matched none of the slices (${all}); showing all ${r.slices.length}`);
   } else {

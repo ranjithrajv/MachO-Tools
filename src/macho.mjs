@@ -143,6 +143,9 @@ export const N_SECT = 0x0e;
 
 export const CPU_X86_64 = 0x01000007;
 export const CPU_ARM64 = 0x0100000c;
+export const CPU_ARM64_32 = 0x0200000c;
+export const CPU_POWERPC = 0x00000012;
+export const CPU_POWERPC64 = 0x01000012;
 
 /**
  * Section attribute bits that mark a section as containing instructions.
@@ -189,14 +192,66 @@ export function isMachOFile(p) {
   }
 }
 
-/** A human name for a CPU type, falling back to its raw value. */
+/**
+ * A human name for a CPU type, falling back to its raw value.
+ *
+ * The fallback is a real fallback and not a placeholder: `sliceName` is the
+ * only place an architecture is turned into text, so an unmapped cputype still
+ * *reports* correctly — as `cputype=0x12` — where a name guessed from the magic
+ * would report something false.
+ *
+ * Coverage is ordered by who actually hands us these files, not by whether the
+ * Darwin headers list them. `ppc` is here because GameCube and Wii binaries
+ * are Mach-O and a large, expert user base analyses them weekly; `ppc64` is one
+ * more line for the same ecosystem. `arm64_32` is here because watchOS ships it,
+ * and it is emphatically *not* a subtype of arm64 — see {@link archMatches}.
+ */
 export function sliceName(cputype) {
   if (cputype === CPU_X86_64) return 'x86_64';
   if (cputype === CPU_ARM64) return 'arm64';
+  if (cputype === CPU_ARM64_32) return 'arm64_32';
+  if (cputype === CPU_POWERPC64) return 'ppc64';
+  if (cputype === CPU_POWERPC) return 'ppc';
   if (cputype === 0x0000000c) return 'arm';
   if (cputype === 0x00000007) return 'i386';
   if (cputype == null) return 'thin';
   return `cputype=0x${cputype.toString(16)}`;
+}
+
+/**
+ * The subtypes that distinguish an architecture without changing its cputype.
+ *
+ * `arm64e` is not a separate `cputype` — it is `CPU_TYPE_ARM64` with a
+ * different *subtype* — so {@link sliceName} cannot see it, and every arm64e
+ * slice was reported as plain `arm64`. On iOS that is the difference between a
+ * binary that uses pointer authentication and one that does not, which is the
+ * first question anything PAC-related asks.
+ *
+ * Masked before comparison because the high byte carries capability flags
+ * rather than subtype: `CPU_SUBTYPE_LIB64` is `0x80000000` and
+ * `CPU_SUBTYPE_PTRAUTH_ABI` reuses the same bit, so a raw compare works on the
+ * binaries seen so far and fails on one that set a flag — the kind of bug that
+ * only appears on someone else's machine.
+ */
+export const CPU_SUBTYPE_ARM64E = 2;
+/** `CPU_SUBTYPE_ARM64E | 8`, the arm64e variant advertising the v8 ISA. */
+export const CPU_SUBTYPE_ARM64E_V8 = 10;
+
+/**
+ * A slice's architecture name, including the arm64e distinction.
+ *
+ * Takes the subtype and degrades to {@link sliceName} when it is absent, which
+ * is a real case rather than a hypothetical: a thin slice's subtype may not have
+ * been read, and `arm64` is a better answer than a fabricated `arm64e`. Every
+ * call site therefore passes whatever it has, and an unknown subtype falls back
+ * to the plain name rather than guessing.
+ */
+export function sliceArchName(cputype, cpusubtype) {
+  if (cputype === CPU_ARM64) {
+    const st = cpusubtype == null ? null : cpusubtype & 0x00ffffff;
+    if (st === CPU_SUBTYPE_ARM64E || st === CPU_SUBTYPE_ARM64E_V8) return 'arm64e';
+  }
+  return sliceName(cputype);
 }
 
 /**
@@ -255,6 +310,11 @@ export function parseFat(f) {
     if (o.length < 20) break;
     slices.push({
       cputype: o.readUInt32BE(0),
+      // Byte 4 of the 20-byte `fat_arch`. Skipped until arm64e needed it, which
+      // is the shape of most gaps here: the subtype is only meaningful for a few
+      // architectures, but a reader that does not carry it cannot name them at
+      // all, and naming is what `--arch` matches on.
+      cpusubtype: o.readUInt32BE(4),
       offset: o.readUInt32BE(8),
       size: o.readUInt32BE(12),
     });
@@ -276,6 +336,7 @@ export function parseThin(f, base = 0) {
   if (!is64 && magic !== MH_MAGIC_32) return null;
 
   const cputype = hdr.readUInt32LE(4);
+  const cpusubtype = hdr.readUInt32LE(8);
   const filetype = hdr.readUInt32LE(12);
   const ncmds = hdr.readUInt32LE(16);
   const sizeofcmds = hdr.readUInt32LE(20);
@@ -379,7 +440,7 @@ export function parseThin(f, base = 0) {
     }
     off += cmdsize;
   }
-  return { is64, cputype, filetype, ncmds, sizeofcmds, segments, sections, loadCommands, symtab, uuid };
+  return { is64, cputype, cpusubtype, filetype, ncmds, sizeofcmds, segments, sections, loadCommands, symtab, uuid };
 }
 
 /**
@@ -391,7 +452,7 @@ export function parseThin(f, base = 0) {
 export function slicesOf(f) {
   const fat = parseFat(f);
   if (fat) return fat.map((s) => ({ ...s, thin: false }));
-  return [{ cputype: null, offset: 0, size: f.size, thin: true }];
+  return [{ cputype: null, cpusubtype: null, offset: 0, size: f.size, thin: true }];
 }
 
 /** The `__TEXT` section of a parsed slice, which is where literals live. */
@@ -533,7 +594,7 @@ export function richestSlice(f) {
     const syms = readSymbols(f, s.offset, thin);
     const entry = {
       ...s,
-      arch: s.thin ? sliceName(thin.cputype) : sliceName(s.cputype),
+      arch: s.thin ? sliceArchName(thin.cputype, thin.cpusubtype) : sliceArchName(s.cputype, s.cpusubtype),
       thin,
       names: syms.names,
       nsyms: syms.total,
@@ -570,10 +631,15 @@ export function preferredSlice(f, prefer) {
   for (const s of slicesOf(f)) {
     const thin = parseThin(f, s.offset);
     if (!thin) continue;
-    const arch = s.thin ? sliceName(thin.cputype) : sliceName(s.cputype);
+    const arch = s.thin ? sliceArchName(thin.cputype, thin.cpusubtype) : sliceArchName(s.cputype, s.cpusubtype);
     const nsyms = thin.symtab ? thin.symtab.nsyms : 0;
     const entry = { offset: s.offset, arch, nsyms, thin, size: s.size };
-    if (prefer && arch === prefer) return entry; // a named request wins outright
+    // `archMatches`, not `===`. Naming arm64e as its own architecture turned this
+    // comparison into a real bug: on an Apple-silicon system binary whose slice
+    // is `arm64e`, `--arch=arm64` stopped matching, the preference was ignored,
+    // and the caller got whichever slice happened to be richest — silently the
+    // wrong answer to a question that had been asked precisely.
+    if (prefer && archMatches(arch, prefer)) return entry;
     if (!best || nsyms > best.nsyms) best = entry;
   }
   return best;
@@ -587,6 +653,15 @@ export function preferredSlice(f, prefer) {
  * `arm64e` slice is asking for the same instruction set, so the `e` suffix is
  * ignored — otherwise `--arch=arm64` would read nothing from an Apple-silicon
  * system binary whose slice is named `arm64e`, and report the file as empty.
+ *
+ * The suffix rule is deliberately narrow, and the names added since say why it
+ * has to stay that way. `arm64e` differs from `arm64` only in capability bits on
+ * the same 64-bit instruction set, so collapsing them is safe. `arm64_32` and
+ * `ppc`/`ppc64` are a different thing entirely: `arm64_32` is 32-bit pointers
+ * under a distinct ABI, and the two PowerPC types differ in pointer width. None
+ * of them ends in `e`, so none of them collapse, and that is the property worth
+ * asserting rather than assuming — a name that later gained a trailing `e`
+ * would silently start matching an architecture it is not.
  */
 export function archMatches(sliceArch, want) {
   if (!want) return true;

@@ -78,9 +78,33 @@ export declare function isMachOFile(p: string): boolean;
 /** A human name for a CPU type, falling back to its raw value. */
 export declare function sliceName(cputype: number | null): string;
 
+/**
+ * A slice's architecture name, including the `arm64e` distinction.
+ *
+ * `arm64e` shares `CPU_TYPE_ARM64` with `arm64` and differs only in subtype, so
+ * {@link sliceName} cannot see it. When `cpusubtype` is null or unread, this
+ * falls back to the plain cputype name.
+ */
+export declare function sliceArchName(
+  cputype: number | null,
+  cpusubtype?: number | null,
+): string;
+
+/** `CPU_SUBTYPE_ARM64E`, masked past the capability bits in the high byte. */
+export declare const CPU_SUBTYPE_ARM64E: number;
+/** `CPU_SUBTYPE_ARM64E_V8` — arm64e advertising the v8 ISA. */
+export declare const CPU_SUBTYPE_ARM64E_V8: number;
+
 /** One entry of a fat header. */
 export interface FatSlice {
   cputype: number;
+  /**
+   * The subtype field, byte 4 of the 20-byte `fat_arch`.
+   *
+   * Only meaningful for architectures that use it — chiefly `arm64e`, which is
+   * an `arm64` subtype rather than a cputype of its own.
+   */
+  cpusubtype: number;
   /** Byte offset of this slice within the *file*. */
   offset: number;
   size: number;
@@ -130,6 +154,8 @@ export interface Symtab {
 export interface Thin {
   is64: boolean;
   cputype: number;
+  /** The subtype from the header, byte 8. See {@link FatSlice.cpusubtype}. */
+  cpusubtype: number;
   segments: Segment[];
   sections: Section[];
   symtab: Symtab | null;

@@ -45,7 +45,7 @@
 import fs from 'node:fs';
 import {
   opener, isMachOFile, slicesOf, parseThin, readSymbols, preferredSlice,
-  richestSlice, sliceName, textSection, codeSections, sectionOf, toVaddr,
+  richestSlice, sliceName, sliceArchName, textSection, codeSections, sectionOf, toVaddr,
   toFileOffset, isBackedByFile, archMatches,
 } from './macho.mjs';
 
@@ -128,7 +128,7 @@ export function describe(path) {
     const slices = [];
     for (const s of slicesOf(f)) {
       const thin = parseThin(f, s.offset);
-      const arch = s.thin ? sliceName(thin?.cputype) : sliceName(s.cputype);
+      const arch = s.thin ? sliceArchName(thin?.cputype, thin?.cpusubtype) : sliceArchName(s.cputype, s.cpusubtype);
       if (!thin) {
         slices.push({
           arch, offset: s.offset, size: s.size, thin: s.thin, readable: false,
@@ -217,7 +217,7 @@ function layoutSlices(f, arch) {
     if (thin) {
       out.push({
         offset: s.offset,
-        arch: s.thin ? sliceName(thin.cputype) : sliceName(s.cputype),
+        arch: s.thin ? sliceArchName(thin.cputype, thin.cpusubtype) : sliceArchName(s.cputype, s.cpusubtype),
         thin,
         size: s.size,
       });
@@ -653,7 +653,7 @@ export function findCalls(path, target, { arch, includeData = false, max = 0 } =
     for (const s of slicesOf(f)) {
       const thin = parseThin(f, s.offset);
       if (!thin) continue;
-      const name = s.thin ? sliceName(thin.cputype) : sliceName(s.cputype);
+      const name = s.thin ? sliceArchName(thin.cputype, thin.cpusubtype) : sliceArchName(s.cputype, s.cpusubtype);
       if (arch && name !== arch) continue;
 
       const enc = callEncoding(name);
@@ -731,7 +731,7 @@ export function listCallTargets(path, { arch, includeData = false, minSites = 0 
     for (const s of slicesOf(f)) {
       const thin = parseThin(f, s.offset);
       if (!thin) continue;
-      const name = s.thin ? sliceName(thin.cputype) : sliceName(s.cputype);
+      const name = s.thin ? sliceArchName(thin.cputype, thin.cpusubtype) : sliceArchName(s.cputype, s.cpusubtype);
       if (arch && name !== arch) continue;
       const enc = callEncoding(name);
       if (!enc) { unsupported.push(name); continue; }
@@ -937,7 +937,7 @@ export function findLiteral(path, literal, { textOnly = false, arch, max = 0 } =
     for (const s of slicesOf(f)) {
       const thin = parseThin(f, s.offset);
       if (!thin) continue;
-      const name = s.thin ? sliceName(thin.cputype) : sliceName(s.cputype);
+      const name = s.thin ? sliceArchName(thin.cputype, thin.cpusubtype) : sliceArchName(s.cputype, s.cpusubtype);
       // `arch` is a preference, not a filter, and this tool now matches the
       // other five: a named slice wins if present, otherwise the richest slice is
       // read anyway. Filtering instead would report a usage mistake — an absent
@@ -1058,7 +1058,7 @@ export function findStrings(path, { arch, min = 4, max = 0, filter = null } = {}
     for (const s of slicesOf(f)) {
       const thin = parseThin(f, s.offset);
       if (!thin) continue;
-      const name = s.thin ? sliceName(thin.cputype) : sliceName(s.cputype);
+      const name = s.thin ? sliceArchName(thin.cputype, thin.cpusubtype) : sliceArchName(s.cputype, s.cpusubtype);
 
       // The C-string sections. `__cstring` is the real one; `__cfstring` is
       // CFString literals, whose pointers are 32 bytes of structure rather than
@@ -1171,7 +1171,7 @@ export function mapLiteral(path, literal, { arch, offsets = null, maxPointers = 
     for (const s of slicesOf(f)) {
       const thin = parseThin(f, s.offset);
       if (!thin) continue;
-      const name = s.thin ? sliceName(thin.cputype) : sliceName(s.cputype);
+      const name = s.thin ? sliceArchName(thin.cputype, thin.cpusubtype) : sliceArchName(s.cputype, s.cpusubtype);
       if (arch && name !== arch) continue;
       const text = textSection(thin);
       const inText = text
@@ -1310,4 +1310,4 @@ export function contextAround(f, off, preLen = 16, hitLen = 8) {
   return { pre: printable(pre), preFrom: lo, hit: printable(f.read(off, hitLen)) };
 }
 
-export { isMachOFile, sliceName, textSection, codeSections };
+export { isMachOFile, sliceName, sliceArchName, textSection, codeSections };

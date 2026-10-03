@@ -85,8 +85,8 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
-  opener, slicesOf, parseThin, readSymbols, preferredSlice, sliceName, textSection,
-  isMachOFile,
+  opener, slicesOf, parseThin, readSymbols, preferredSlice, sliceName, sliceArchName, archMatches,
+  textSection, isMachOFile,
 } from '../src/macho.mjs';
 import { bundleLayout, isBundle } from '../src/bundle.mjs';
 import { executableIn } from '../src/target.mjs';
@@ -400,6 +400,74 @@ console.log('bundle.mjs / target.mjs:');
 
 console.log('macho.mjs:');
 {
+  // Arch naming is a pure function of the cputype, so it is checked directly
+  // rather than through a binary. A fixture per architecture would test the
+  // same six comparisons six times over and still not cover the one that
+  // matters most: an architecture we have *not* named must stay unnamed rather
+  // than borrow a neighbour's name and be reported as a slice it is not.
+  const NAMED = [
+    [0x01000007, 'x86_64'],
+    [0x0100000c, 'arm64'],
+    [0x0200000c, 'arm64_32'],
+    [0x01000012, 'ppc64'],
+    [0x00000012, 'ppc'],
+    [0x0000000c, 'arm'],
+    [0x00000007, 'i386'],
+  ];
+  for (const [ct, want] of NAMED) {
+    check(sliceName(ct) === want, `sliceName(0x${ct.toString(16)}) is ${want}`, sliceName(ct));
+  }
+  check(sliceName(0x0000000d) === 'cputype=0xd', 'an unmapped cputype falls back to its raw value', sliceName(0x0000000d));
+
+  // arm64e is a *subtype* of arm64, so `sliceName` cannot see it — this is the
+  // property that made every arm64e slice report as plain arm64.
+  check(sliceName(0x0100000c) === 'arm64', 'sliceName cannot distinguish arm64e — it is not a cputype', sliceName(0x0100000c));
+  for (const [sub, want] of [[2, 'arm64e'], [10, 'arm64e'], [0, 'arm64'], [1, 'arm64'], [8, 'arm64']]) {
+    check(sliceArchName(0x0100000c, sub) === want, `sliceArchName(arm64, subtype ${sub}) is ${want}`, sliceArchName(0x0100000c, sub));
+  }
+  // The capability bits live in the high byte, so a raw compare against the
+  // subtype works until a binary sets one — which is every arm64e binary built
+  // with pointer authentication.
+  check(
+    sliceArchName(0x0100000c, 0x80000002) === 'arm64e',
+    'arm64e survives CPU_SUBTYPE_LIB64 in the high byte',
+    sliceArchName(0x0100000c, 0x80000002),
+  );
+  // A subtype read as a signed int32 is negative, which is how the high-byte mask
+  // gets skipped by accident in code that compares the raw value.
+  check(
+    sliceArchName(0x0100000c, 0x80000000 | 2 | 0) === 'arm64e',
+    'arm64e survives the same bit read as a signed int32',
+    sliceArchName(0x0100000c, -2147483646),
+  );
+  check(sliceArchName(0x0100000c, null) === 'arm64', 'an unread subtype degrades to arm64, not a guessed arm64e', sliceArchName(0x0100000c, null));
+  check(sliceArchName(0x0100000c, undefined) === 'arm64', 'and so does a missing one', sliceArchName(0x0100000c, undefined));
+  check(sliceArchName(null, null) === 'thin', 'a null cputype still reads as thin', sliceArchName(null, null));
+  // The subtype must not leak into architectures that do not have one. If the
+  // mask were applied before the cputype test, an x86_64 slice would inherit
+  // whatever subtype it happened to carry.
+  check(sliceArchName(0x01000007, 2) === 'x86_64', 'an arm64e subtype does not rename an x86_64 slice', sliceArchName(0x01000007, 2));
+  check(sliceName(null) === 'thin', 'a null cputype reads as thin, not as 0x0', sliceName(null));
+
+  // `--arch` is compared by name, so the architectures that must NOT be
+  // interchangeable are the ones worth pinning: these differ in pointer width
+  // or ABI, and treating them as aliases would read a slice the caller did not
+  // ask for and report its addresses as if they were the requested arch's.
+  for (const [a, b] of [['arm64', 'arm64_32'], ['ppc', 'ppc64']]) {
+    check(
+      !archMatches(a, b) && !archMatches(b, a),
+      `${a} and ${b} are not interchangeable`,
+    );
+  }
+  check(archMatches('ppc64', 'ppc64') && archMatches('arm64_32', 'arm64_32'), 'an exact name always matches');
+  check(archMatches('arm64', undefined), 'no request matches everything');
+  // arm64e and arm64 are one instruction set, and the `e` rule is what makes
+  // `--arch=arm64` work on an Apple-silicon system binary at all. Pinning both
+  // directions because the rule is a suffix strip: it happens to work here and
+  // would fail on any name that later ended in `e` for another reason.
+  check(archMatches('arm64e', 'arm64') && archMatches('arm64', 'arm64e'),
+    'arm64 and arm64e are interchangeable for --arch');
+
   const b = binaries[0];
   const f = opener(b.path);
   // The regression: an absent architecture must be a preference, not a

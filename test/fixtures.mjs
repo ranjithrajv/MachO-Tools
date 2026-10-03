@@ -87,6 +87,7 @@ const LC_UUID = 0x1b;
 const FIXTURE_UUID = 'a1b2c3d4-e5f6-4708-9a0b-1c2d3e4f5061';
 const CPU_X86_64 = 0x01000007;
 const CPU_ARM64 = 0x0100000c;
+const CPU_SUBTYPE_ARM64E = 2;
 
 const N_TYPE = 0x0e;
 const N_SECT = 0x0e;      // defined
@@ -159,7 +160,7 @@ const textVaddr = (textOffset, base = VMADDR_BASE) => base + BigInt(textOffset);
  * 180,760 bytes of a real binary, and offset 0x1000 — the first byte of `__text`
  * — comes back as being inside `__bss`.
  */
-function thinMachO({ cputype, text, data, dataFlags = S_REGULAR, symbols, textFlags = S_ATTR_PURE_INSTRUCTIONS | 0x4, zerofill = null, bits = 64, base = VMADDR_BASE, uuid = null }) {
+function thinMachO({ cputype, cpusubtype = 3, text, data, dataFlags = S_REGULAR, symbols, textFlags = S_ATTR_PURE_INSTRUCTIONS | 0x4, zerofill = null, bits = 64, base = VMADDR_BASE, uuid = null }) {
   const segname = '__TEXT';
   const is64 = bits === 64;
   const nsects = zerofill ? 3 : 2;
@@ -223,7 +224,7 @@ function thinMachO({ cputype, text, data, dataFlags = S_REGULAR, symbols, textFl
   // `headerSize`.
   buf.writeUInt32LE(is64 ? MH_MAGIC_64 : MH_MAGIC_32, 0);
   buf.writeInt32LE(cputype, 4);
-  buf.writeInt32LE(3, 8);                   // cpusubtype
+  buf.writeInt32LE(cpusubtype, 8);          // cpusubtype
   buf.writeUInt32LE(2, 12);                 // filetype: MH_EXECUTE
   buf.writeUInt32LE(ncmds, 16);
   buf.writeUInt32LE(loadCommandsSize, 20);
@@ -416,7 +417,11 @@ function fat(slices) {
   slices.forEach((s, i) => {
     const o = 8 + i * 20;
     buf.writeInt32BE(s.cputype, o);
-    buf.writeUInt32BE(3, o + 4);
+    // cpusubtype, byte 4 of the fat_arch. Written from the slice rather than
+    // hardcoded because arm64e is a *subtype* of arm64: a fixture whose fat
+    // record says arm64 while its thin header says arm64e is a file that lies
+    // about itself, and would test the wrong half of the read.
+    buf.writeUInt32BE(s.cpusubtype ?? 3, o + 4);
     buf.writeUInt32BE(placed[i].offset, o + 8);
     buf.writeUInt32BE(s.thin.length, o + 12);
     buf.writeUInt32BE(14, o + 16);
@@ -779,6 +784,31 @@ function universal() {
 }
 
 /**
+ * A fat binary whose arm64 slice is arm64e.
+ *
+ * arm64e is not a separate cputype, so a reader that only looks at `cputype`
+ * reports this file as arm64 and every question about pointer authentication is
+ * answered wrong. Two things have to be right for this fixture to catch that:
+ * the subtype must be carried out of the fat arch record (byte 4 of a 20-byte
+ * entry) *and* out of the thin header (byte 8), because `--arch=arm64e` matches
+ * against the fat record while a thin slice is read at offset 0.
+ */
+function universalArm64e() {
+  return fat([
+    { cputype: CPU_X86_64, thin: thinMachO({ cputype: CPU_X86_64, ...codeFixture(CPU_X86_64) }) },
+    {
+      cputype: CPU_ARM64,
+      cpusubtype: CPU_SUBTYPE_ARM64E,
+      thin: thinMachO({
+        cputype: CPU_ARM64,
+        cpusubtype: CPU_SUBTYPE_ARM64E,
+        ...codeFixture(CPU_ARM64),
+      }),
+    },
+  ]);
+}
+
+/**
  * A binary with no symbol table at all — the stripped case.
  *
  * `findcall` and `findliteral` read bytes and must still work on it; `sym`
@@ -872,6 +902,22 @@ async function verify(files) {
   const { describe, findCalls, listCallTargets, findLiteral, mapLiteral, lookupAddress } =
     await import('../src/api.mjs');
 
+  // `--arch` matching. `describe` itself does not narrow by architecture — the
+  // flag is applied by the CLI on top of the result — so the matching rule under
+  // test is the one `preferredSlice` uses, which is what every `--arch` caller
+  // resolves through.
+  const { preferredSlice, opener: openForArch, sliceArchName: archOf } =
+    await import('../src/macho.mjs');
+  const pick = (p, arch) => {
+    const h = openForArch(p);
+    try {
+      const s = preferredSlice(h, arch);
+      return s ? { arch: s.arch, offset: s.offset } : null;
+    } finally {
+      h.close();
+    }
+  };
+
   const problems = [];
   const expect = (ok, what) => { if (!ok) problems.push(what); };
 
@@ -907,6 +953,34 @@ async function verify(files) {
     u.slices[0].size > 0 && u.slices[1].size > 0 &&
       u.slices[0].offset + u.slices[0].size <= u.slices[1].offset,
     'universal: slices do not overlap',
+  );
+
+  // arm64e. The subtype lives in two different places — byte 4 of the 20-byte
+  // fat_arch, and byte 8 of the thin header — and `--arch` matches against the
+  // fat record while a thin slice is read from the thin header. A reader that
+  // plumbs only one of them reports this file as arm64 and looks correct.
+  const e = describe(files.arm64e);
+  expect(e.slices.map((s) => s.arch).sort().join(',') === 'arm64e,x86_64',
+    `arm64e: the fat slice is named arm64e, not arm64 (got ${e.slices.map((s) => s.arch).join(', ')})`);
+  const te = describe(files.thinarm64e);
+  expect(te.slices[0].arch === 'arm64e',
+    `thin-arm64e: a thin slice is named from its own header (got ${te.slices[0].arch})`);
+  expect(describe(files.arm64only).slices[0].arch === 'arm64',
+    'a plain arm64 slice is still named arm64, not arm64e');
+  // `--arch=arm64` must still select the arm64e slice: same instruction set, and
+  // a request that silently matched nothing would report the wrong slice's
+  // addresses as though they were the ones asked about.
+  expect(
+    pick(files.arm64e, 'arm64')?.arch === 'arm64e',
+    'arm64e: --arch=arm64 matches the arm64e slice',
+  );
+  expect(
+    pick(files.arm64e, 'arm64e')?.arch === 'arm64e',
+    'arm64e: --arch=arm64e selects that slice outright',
+  );
+  expect(
+    pick(files.arm64e, 'x86_64')?.arch === 'x86_64',
+    'arm64e: --arch=x86_64 still selects the x86_64 slice',
   );
 
   // arm64-only: the "absent architecture is a preference" regression.
@@ -1352,6 +1426,8 @@ export async function buildFixtures({ out = OUT, check = false } = {}) {
     'thin-x86_64.macho': thinMachO({ cputype: CPU_X86_64, ...x86 }),
     'thin-arm64.macho': thinMachO({ cputype: CPU_ARM64, ...arm }),
     'arm64-only.macho': thinMachO({ cputype: CPU_ARM64, text: arm.text, data: arm.data, symbols: arm.symbols }),
+    'arm64e.macho': universalArm64e(),
+    'thin-arm64e.macho': thinMachO({ cputype: CPU_ARM64, cpusubtype: CPU_SUBTYPE_ARM64E, ...arm }),
     'decoy.macho': thinMachO({ cputype: CPU_X86_64, text: decoy.text, data: decoy.data, symbols: decoy.symbols, textFlags: decoy.textFlags }),
     // The one fixture carrying an LC_UUID, so the reader's UUID path has something
     // to read. It is here because this fixture's assertions are about a binary with
@@ -1379,6 +1455,8 @@ export async function buildFixtures({ out = OUT, check = false } = {}) {
     universal: BUILT['universal.macho'].length,
     thin: { x86_64: BUILT['thin-x86_64.macho'].length, arm64: BUILT['thin-arm64.macho'].length },
     arm64only: BUILT['arm64-only.macho'].length,
+    arm64e: BUILT['arm64e.macho'].length,
+    thinArm64e: BUILT['thin-arm64e.macho'].length,
     decoy: BUILT['decoy.macho'].length,
     stripped: BUILT['stripped.macho'].length,
     populated: BUILT['populated.macho'].length,

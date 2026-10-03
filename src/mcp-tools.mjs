@@ -507,7 +507,12 @@ export const TOOLS = [
         const notes = [];
         if (args.arch && data.slices.length > 1) {
           const all = data.slices.map((s) => s.arch);
-          const match = data.slices.find((s) => s.arch === args.arch);
+          // `archMatches`, not `===`, for the same reason the CLI uses it: an
+          // arm64e slice is an arm64 slice for the purposes of a name request, and
+          // `===` reports "matched none" for `--arch=arm64` on every current
+          // Apple-silicon system binary.
+          const { archMatches } = await import('./macho.mjs');
+          const match = data.slices.find((s) => archMatches(s.arch, args.arch));
           if (!match) {
             notes.push(`--arch=${args.arch} matched none of the slices (${all.join(', ')}); showing all`);
           } else {
