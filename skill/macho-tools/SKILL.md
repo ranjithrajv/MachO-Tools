@@ -158,6 +158,13 @@ but does not interpret them. Not ELF, not PE. **Little-endian only** — big-end
 Mach-O (NeXTSTEP on m68k/SPARC, classic Mac OS on PowerPC) is refused as
 `unknown-encoding`; a `ppc` slice is named and reported `readable: false`.
 
+All twelve `MH_*` filetypes are named, but only the loaded-image ones
+(`MH_EXECUTE`, `MH_DYLIB`, `MH_BUNDLE`, `MH_DYLINKER`, `MH_KEXT_BUNDLE`, …)
+behave as you would expect. **Do not trust addresses from a `MH_OBJECT`**: an
+object file is relocatable, so it has no load address — `textAddr` is `0x0` and
+symbol values are section-relative offsets. `MH_FILESET` (kernelcache) is named
+but its nested Mach-Os are not walked, and `MH_DSYM`/`MH_CORE` carry no code.
+
 Every Apple platform is covered, because they all ship Mach-O: **macOS**
 (`x86_64`, `arm64`, `i386`), **iOS and iPadOS** (`arm64`, `arm64e`, `armv7`),
 **tvOS** (`arm64`), **watchOS** (`arm64_32`, `armv7k`) and **visionOS**

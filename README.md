@@ -46,11 +46,12 @@ is enough:
 | | |
 |---|---|
 | **Format** | thin and fat (universal), 32-bit and 64-bit, little-endian |
-| **Also reported** | the target platform and SDK (`LC_BUILD_VERSION`), the `MH_*` filetype, and `ppc` / `ppc64` by name |
+| **Filetypes** | all twelve `MH_*` values named — executable, dylib, bundle, dylinker, kext, fileset, dSYM, core, object |
+| **Also reported** | the target platform and SDK (`LC_BUILD_VERSION`), and `ppc` / `ppc64` by name |
 | **Not covered** | big-endian Mach-O, ELF, PE, the dyld shared cache, firmware images |
 | **Hosts** | Linux, macOS and Windows — one Node runtime, no dependencies, no build step |
 
-Four things about that table are worth stating rather than leaving to be
+Five things about that table are worth stating rather than leaving to be
 discovered:
 
 - **visionOS needs nothing new.** A Vision Pro binary is arm64 Mach-O — the M2 —
@@ -69,6 +70,16 @@ discovered:
   `unknown-encoding` rather than being parsed as if its bytes were little-endian
   — so a NeXTSTEP or classic Mac OS binary is visibly unsupported instead of
   quietly wrong.
+- **All twelve `MH_*` filetypes are named; four are read with a caveat.** The
+  eight loaded-image shapes — `MH_EXECUTE`, `MH_DYLIB`, `MH_BUNDLE`,
+  `MH_DYLINKER`, `MH_KEXT_BUNDLE`, `MH_FVMLIB`, `MH_PRELOAD`, `MH_DYLIB_STUB` —
+  are what the tools are built for. The other four parse and are named, but the
+  address model does not carry over: `MH_OBJECT` is relocatable, so it has no
+  load address (`textAddr` is `0x0` and symbol values are section-relative
+  offsets, making `symlookup`/`a2o` answers meaningful only relative to the
+  object); `MH_FILESET` is named but **not traversed**, so the nested Mach-Os
+  inside a kernelcache are not walked; `MH_DSYM` carries only `__DWARF`, which
+  this does not read; and `MH_CORE` keeps its state in `LC_THREAD`, not `__text`.
 
 An App Store binary's `__TEXT` is ciphertext, which changes what a zero result
 means. That is not a footnote: see
