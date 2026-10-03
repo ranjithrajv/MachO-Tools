@@ -20,8 +20,9 @@ try to make it decode code.
 
 `macho-describe` is also the only tool here that shows you the map: every
 segment, every section with its address and size, every load command by name,
-and the build's UUID — the one field that says *which* build this is rather than
-what is in it.
+the build's UUID — the one field that says *which* build this is rather than
+what is in it — and the platform and filetype, which say whether you are holding
+an iOS binary, a framework or a command-line tool.
 
 ```sh
 macho-describe --sections /path/to/binary   # segment,section  addr..end  size  code|data
@@ -153,7 +154,15 @@ to exist, that is why — it is not a broken install. Use a real binary instead.
 No disassembly, no decompilation. No indirect or PLT call resolution. No dSYM or
 DWARF. No code signature, entitlements, chained fixups, export tries, or
 Objective-C and Swift metadata — `describe --loads` *names* those load commands
-but does not interpret them. Not ELF, not PE.
+but does not interpret them. Not ELF, not PE. **Little-endian only** — big-endian
+Mach-O (NeXTSTEP on m68k/SPARC, classic Mac OS on PowerPC) is refused as
+`unknown-encoding`; a `ppc` slice is named and reported `readable: false`.
+
+macOS and iOS are both covered: `arm64`, `arm64e`, `x86_64`, `i386`, `armv7`,
+32- and 64-bit, thin and universal. `macho-describe` reports the platform
+(`ios`, `macos`, the simulators), the filetype, and whether an App Store binary's
+`__TEXT` is encrypted — which is the one thing that makes a zero result from
+`macho-findcall` mean "could not look" rather than "nothing calls this".
 
 When you need to know what the code *does* rather than where it is, use Ghidra
 (free, no licence server) or Hopper. That is the intended division: this produces

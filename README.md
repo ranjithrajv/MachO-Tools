@@ -2,10 +2,12 @@
 
 [![test](https://github.com/ranjithrajv/MachO-Tools/actions/workflows/test.yml/badge.svg)](https://github.com/ranjithrajv/MachO-Tools/actions/workflows/test.yml)
 
-Mach-O binary introspection. Reads fat headers, symbol tables, sections and
-`__text`, and answers questions about an executable you know nothing about.
-**It knows nothing about any application** — no formats, no products, no save
-files. Every answer is a fact about the file format or about the bytes.
+Mach-O binary introspection for **macOS and iOS** binaries — thin or universal,
+32-bit or 64-bit, `arm64`/`arm64e`/`x86_64`/`i386`/`armv7`. Reads fat headers,
+symbol tables, sections and `__text`, and answers questions about an executable
+you know nothing about. **It knows nothing about any application** — no formats,
+no products, no save files. Every answer is a fact about the file format or about
+the bytes.
 
 **Mach-O is the whole scope, chosen.** This is a tool built around one format,
 not a toolkit that happens to include one, and that focus is what pays for the
@@ -27,11 +29,31 @@ node src/findcall.mjs --json 0x100085c30 /usr/local/go/bin/go | jq '.count'
 
 No dependencies, no build step, no install, no network. Node ≥ 22.15.
 
+## What it covers
+
+| | |
+|---|---|
+| **Format** | Mach-O — thin and fat (universal), 32-bit and 64-bit, little-endian |
+| **macOS** | `x86_64`, `arm64`, `i386` |
+| **iOS / iPadOS** | `arm64`, `arm64e`, `armv7` — including App Store binaries, whose `__TEXT` is encrypted |
+| **Also reported** | `platform` and `sdk` from `LC_BUILD_VERSION` (`ios`, `macos`, `tvos`, `watchos`, `visionos`, and the simulators), the `MH_*` filetype, and `ppc` / `ppc64` / `arm64_32` by name |
+| **Not covered** | big-endian Mach-O, ELF, PE, the dyld shared cache, firmware images |
+| **Hosts** | Linux, macOS and Windows — one Node runtime, no dependencies, no build step |
+
+Big-endian is **refused, not misread**. A PowerPC or 68k slice is named and listed
+in the slice table, but reports `readable: false` with `unknown-encoding` rather
+than being parsed as if its bytes were little-endian — so a NeXTSTEP or classic
+Mac OS binary is visibly unsupported instead of quietly wrong.
+
+An App Store binary's `__TEXT` is ciphertext, which changes what a zero result
+means. That is not a footnote: see
+[iOS binaries, and what an encrypted one means](#ios-binaries-and-what-an-encrypted-one-means).
+
 ## The tools
 
 | | |
 |---|---|
-| `describe.mjs` | What is in this file? Every slice, architecture, extent, symbol counts, where `__TEXT` starts, the build's **UUID** — and with `--sections`, `--segments` or `--loads`, every section, segment and load command by name |
+| `describe.mjs` | What is in this file? Every slice, architecture, extent, **platform** (ios / macos / tvos…), **filetype**, symbol counts, where `__TEXT` starts, the build's **UUID**, and whether it is **encrypted** — plus, with `--sections`, `--segments` or `--loads`, every section, segment and load command by name |
 | `sym.mjs` | Search a symbol table by substring, or by regex with `--regex`. Imports marked rather than shown as `0x0` |
 | `symlookup.mjs` | Which function contains this vaddr? Reads symbols directly, because `nm` on a large universal binary is unusable |
 | `findcall.mjs` | Direct `call`/`jmp` xrefs to an address — or `--list` for the distinct targets a binary calls |
@@ -77,8 +99,8 @@ address by *looking* like one turns a typo into a confident wrong answer.
 | `--json` | Emit one JSON object on stdout; diagnostics go to stderr |
 | `-b`, `--binary <path>` | The binary, for tools where every positional is a query |
 | `--arch=<name>` | Restrict to one architecture. A preference, not a requirement: if the slice is absent another is read, and the note says which |
-| `--sections`, `--segments`, `--loads` | `describe`: list sections, segments, or load commands by name |
-| `--strings`, `--min`, `--filter` | `findliteral`: list the strings already in the binary instead of searching for one |
+| `--sections`, `--segments`, `--loads` | `describe`: list sections, segments, or load commands by name. The lists themselves are always in `--json` |
+| `--strings`, `--min`, `--filter` | `findliteral`: list the strings already in the binary instead of searching for one. On an encrypted binary this reports `encrypted` rather than "no strings" |
 | `--include-data` | `findcall`: widen the scan from code sections to every section |
 | `-h`, `--help` | Print usage |
 
@@ -100,6 +122,55 @@ successful exit status.
 
 `a2o` and `o2a` take only addresses or offsets as positionals, so their binary
 comes from `-b` like `symlookup`'s does.
+
+### iOS binaries, and what an encrypted one means
+
+A Mach-O from an iPhone and one from a Mac agree at every level this reader used
+to look: same magic, same word size, same load-command shape. Four things tell
+them apart, and all four are now read:
+
+| | |
+|---|---|
+| `platform` | From `LC_BUILD_VERSION` or the older `LC_VERSION_MIN_*`: `ios`, `macos`, `tvos`, `watchos`, `maccatalyst`, `ios-simulator`, `visionos`, … plus `minos` and `sdk` |
+| `filetype` | `MH_EXECUTE`, `MH_DYLIB`, `MH_BUNDLE`, `MH_FILESET`, … — an iOS `.app` contains all three of the first, and "which is this" is the first question a bundle raises |
+| `cpusubtype` | `arm64e` is `CPU_TYPE_ARM64` with a different *subtype*, so the type alone cannot name it. Reported as `arm64e` now, because on iOS that is the difference between a binary that uses pointer authentication and one that does not |
+| `cryptid` | From `LC_ENCRYPTION_INFO`/`_64` |
+
+The fourth is the one that matters. An App Store binary ships with `__TEXT`
+encrypted, so its code and its `__cstring` are **ciphertext**:
+
+```sh
+$ node src/describe.mjs SomeApp.app/Contents/MacOS/SomeApp
+  arm64e   file 0..48123456  64-bit  ios MH_EXECUTE  0 defined / 0 symbols  2 code section(s)
+           ENCRYPTED (cryptid=1) — __TEXT is ciphertext, an App Store build; findcall, findliteral and --strings cannot read it
+           minos 16.4  sdk 17.0
+```
+
+Without that check, `findcall` on such a binary returns **zero hits** and reads
+as *"nothing calls this function"* — a claim about code that was never readable.
+So the scanners refuse instead, with a reason code that is not `no-*`:
+
+| | unencrypted, nothing found | encrypted, could not look |
+|---|---|---|
+| exit | `1` | `3` |
+| `errors` | `["no-call-sites"]` | `["encrypted"]` |
+| MCP | `ok: true`, `count: 0` | `isError: true` |
+
+`"found nothing"` and `"could not look"` are different answers, and the whole
+exit-code taxonomy exists to keep them apart.
+
+The asymmetry worth knowing: **the symbol table is not encrypted**, so
+`symlookup` still resolves names on a binary whose code cannot be read. That is
+the real situation, and it is what the `ios.macho` fixture reproduces — including
+the encryption itself, not merely the declaration, because a fixture that
+declared ciphertext and shipped plaintext would let `--strings` "succeed" and
+look like the check was broken.
+
+**Coverage, honestly.** macOS x86_64/arm64 and 32-bit i386 work; iOS armv7 and
+arm64/arm64e work. **Big-endian Mach-O is not supported** — NeXTSTEP on m68k,
+SPARC or HPPA, and macOS on PowerPC, are refused as `unknown-encoding` rather
+than misread. A big-endian slice inside a fat binary is reported as unreadable
+with its raw `cputype`, so it is visible rather than silently absent.
 
 ### A lone path is the binary, not a pattern
 
@@ -291,6 +362,12 @@ question it was never built for is not.
 - **One format, on purpose.** Mach-O is what this package is for, not the only
   format it has not got round to yet. Android APKs, iOS bundles and Windows PE
   need a different reader, and always will.
+- **Little-endian only.** Fields are read in little-endian order, so big-endian
+  Mach-O — NeXTSTEP on m68k, SPARC or HPPA, and classic Mac OS on PowerPC — is
+  refused as `unknown-encoding` rather than misread. A big-endian slice inside a
+  fat binary is listed by name (`ppc`) and reported `readable: false`, so it is
+  visible rather than silently absent. This is the boundary of the coverage
+  table above, and it is a refusal rather than a parse that happens to be wrong.
 - **Direct calls only.** Indirect calls, register calls and jumps through a PLT
   stub do not encode their target in the instruction, so they do not appear in
   `findcall`. Every hit is a site *worth disassembling*, not a proven call-graph
