@@ -2,7 +2,7 @@
   "name": "MachO-Tools",
   "version": "0.1.0",
   "type": "module",
-  "description": "Mach-O binary introspection: fat-header and symbol-table reading, vaddr lookup, direct-call xrefs, literal-to-address mapping. Knows nothing about any application.",
+  "description": "Mach-O binary introspection for Apple binaries: fat headers, symbol search, vaddr lookup, address-to-offset mapping, direct-call xrefs and byte-literal search. Zero dependencies, no build step — and it reads Mac binaries from Linux or Windows.",
   "keywords": [
     "mach-o",
     "macho",

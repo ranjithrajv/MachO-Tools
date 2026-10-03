@@ -93,9 +93,9 @@ conflating any two of them puts a patch script in the wrong place:
 
 `__bss` has an address and a size, and the linker records its file offset as `0`,
 so a reader that walks sections without asking whether they occupy bytes resolves
-the Mach-O header into `__bss` — in `go`, the first 180,760 bytes of the file. The
-`zerofill` fixture exists to keep that fixed, and reverting the fix fails five
-assertions against it.
+the Mach-O header into `__bss` — in `go`, a prefix of the file measured in
+  hundred-odd kilobytes. The `zerofill` fixture exists to keep that fixed, and
+  reverting the fix fails the suite against it.
 
 ## When to use this, and when not to
 
@@ -121,11 +121,11 @@ Reach for **something else** when:
 
 - you want **Mach-O and everything around it**. [`blacktop/ipsw`](https://github.com/blacktop/ipsw)
   is the closest thing to a superset of this package: 17 `macho` commands and 34
-  `dyld` commands covering load commands, chained fixups, code signing,
-  entitlements, FairPlay decryption, Objective-C and Swift metadata, ARM64
-  disassembly, and firmware images and dyld shared caches this package never
-  looks at. It is MIT, installs from Homebrew, and is the better choice for
-  almost every question *except* the two in the table below;
+  `dyld` commands as of `ipsw` 3.1.730, covering load commands, chained fixups,
+  code signing, entitlements, FairPlay decryption, Objective-C and Swift
+  metadata, ARM64 disassembly, and firmware images and dyld shared caches this
+  package never looks at. It is MIT, installs from Homebrew, and is the better
+  choice for almost every question *except* the two in the table below;
 - you want a **complete, general Mach-O parser**.
   [`p-x9/MachOKit`](https://github.com/p-x9/MachOKit) (Swift, the most complete)
   or [`pstirparo/machofile`](https://github.com/pstirparo/machofile) (Python,
@@ -149,7 +149,7 @@ Reach for **something else** when:
 | vaddr → function | yes | yes (`macho a2s`) | partial | no | no | yes |
 | vaddr → file offset | yes | yes (`macho a2o`) | no | no | no | by hand |
 | file offset → vaddr | yes | yes (`macho o2a`) | no | no | no | by hand |
-| Zero-fill reported as its own case | yes | no ‡ | no | no | no | no |
+| Zero-fill reported as its own case | yes | no ¶ | no | no | no | no |
 | Direct-call xrefs | yes | **no** † | no | no | no | yes |
 | Indirect / PLT xrefs | **no** | no | no | no | no | yes |
 | Literal → vaddr → pointers | yes | **no** † | no | no | no | by hand |
@@ -170,8 +170,9 @@ is that the obvious implementation of both is wrong in the same direction. A
 section's file `offset` is relative to its slice, and `__bss` records an offset
 of 0 while having a non-zero size — so a reader that walks sections without
 asking whether they occupy bytes resolves the Mach-O header into `__bss`. In
-`go` that is the first 180,760 bytes of the file. `a2o` reports both the
-slice-relative and the absolute offset, and treats zero-fill as its own answer.
+`go` that is a prefix of the file measured in hundred-odd kilobytes. `a2o`
+reports both the slice-relative and the absolute offset, and treats zero-fill as
+its own answer.
 
 `ipsw` wins almost every row above, and that is the honest shape of the
 landscape: it is the superset, this is the subset. The three rows marked † are
@@ -192,7 +193,7 @@ still exists:
 returns `can only disassemble arm64 binaries` on any other CPU — so on x86_64,
 `findcall` covers ground `ipsw` does not reach at all.
 
-‡ `macho a2o` and `macho o2a` return an offset for any address, including one
+¶ `macho a2o` and `macho o2a` return an offset for any address, including one
 inside `__bss` — which has an address, a size, and no bytes in the file, because
 the loader supplies zeros. The offset it reports there is arithmetic that does not
 correspond to a readable byte. `a2o` reports that case as `zerofill: true` with
@@ -408,7 +409,7 @@ node test/fixtures.mjs --check    #  ~0.1s   the corpus matches its generator
 node test/smoke.mjs               #  ~4s     the tools, on binaries they were not written for
 node test/mcp.mjs                 #  ~15s    the protocol, driven over a real pipe
 node test/skill.mjs               #  ~3s     the agent instructions match the tools
-node test/mutation-check.mjs      #  ~2m     7 mutations, 7 caught
+node test/mutation-check.mjs      #  ~2m     the historical defects are still caught
 ```
 
 The four fast numbers are wall-clock on an M-series laptop and are there to set

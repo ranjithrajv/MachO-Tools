@@ -61,9 +61,9 @@ and naming what it assesses is the point of it.
 
 Not a preference — it is what the README's install section promises.
 `src/macho.mjs` imports exactly one thing, `node:fs`, and has no
-internal imports, so it works as a single copied file; a reviewer can audit 20 KB
-by reading it, and a pipeline that must not reach the network can run with no
-install at all.
+internal imports, so it works as a single copied file; it stays small enough that
+a reviewer can audit it by reading it, and a pipeline that must not reach the
+network can run with no install at all.
 
 A dependency would break both claims. So would a transpile step, a bundler, a
 `tsconfig`, or anything else a reader has to install before they can check a
@@ -79,14 +79,21 @@ until all three pass:
 
 ```sh
 node test/fixtures.mjs --check    #  ~0.1s   the corpus matches its generator
-node test/smoke.mjs               #  ~4s     243 passed, 1 skipped
-node test/mutation-check.mjs      #  ~2m     7 mutations, 7 caught
+node test/smoke.mjs               #  ~4s     the tools, on binaries they were not written for
+node test/mcp.mjs                 #  ~15s    the protocol, driven over a real pipe
+node test/skill.mjs               #  ~3s     the agent instructions match the tools
+node test/mutation-check.mjs      #  ~2m     the historical bugs are still caught
 ```
+
+Each suite prints its own counts. They are deliberately not written here: a
+number in prose is a claim that some later commit has to remember, and the
+failure mode is a document asserting a total the reader can disprove by running
+one command. Read the number off the run.
 
 `npm run test:all` runs all three in order. There is no `npm install` step
 because there is nothing to install.
 
-**`fixtures --check`** re-derives all 40,447 bytes of the generated corpus and
+**`fixtures --check`** re-derives every byte of the generated corpus and
 compares them to what is on disk. Never hand-edit a file under
 `test/fixtures/`; run `node test/fixtures.mjs` to regenerate it. A hand-edited
 or stale fixture is a test that has stopped testing while still reporting
@@ -326,11 +333,27 @@ Two documents, two audiences, and the split is deliberate:
   material is something a *user* needs in order to use the tool; if not, it goes
   here.
 
-The README's numbers are claims, not decoration: `243 passed`, `7 mutations, 7
-caught`, `40,447 bytes`. If a change moves them, update them in the same commit
-— a README that says a suite passes 242 checks when it passes 244 is a
-documentation bug, and this project has a documented allergy to confident
-wrong answers.
+A document's numbers are a liability, not decoration. An earlier version of this
+rule required the README to carry the suite's exact totals and to update them in
+the same commit as any change that moved them — which is a rule about
+remembering, and remembering is what the test suite is for. It was replaced
+under the pressure of its own cost: a total in prose goes stale the moment
+anyone adds an assertion, and the first time it does, it is wrong in a document
+whose entire argument is that this project would rather say nothing than say
+something confidently and incorrectly.
+
+So neither file prints a count. What a document may do is state **what a check
+establishes** — that `fixtures --check` proves the corpus was not hand-edited,
+that `mutation-check` reintroduces one real historical defect at a time and
+requires the suite to fail — and leave the totals to the run, where they are
+printed by the thing that measured them. A claim that cannot go stale is worth
+more than a number that can.
+
+The exception is a number about something *outside* this repository, which no
+commit here can change. Those carry the date they were checked: the `ipsw`
+command counts in the README comparison are stated as of a specific `ipsw`
+release, so a reader who finds them stale can tell whether the tool moved or the
+document did.
 
 If a change alters the plan rather than the code — a scope change, a new
 boundary, a decision about what this is not — `TOWS.md` is where that is
