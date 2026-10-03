@@ -136,6 +136,52 @@ const MUTATIONS = [
     replace: `      for (const sec of pool.sections) sliceScanned += tallySection(f, sec, enc, counts, 0, mapped); // MUTATED: no slice base`,
     expect: /resolves real call sites|finds at least one destination|positive control/,
   },
+
+  // The three 32-bit defects, as mutations rather than as tests.
+  //
+  // The `bits32` fixture asserts all three, so a mutation here must be caught —
+  // but this file exists to prove the *suite* notices a broken reader rather than
+  // to describe what is broken, and the three bugs were each invisible in the
+  // 64-bit fixtures. Without them here, the mutation job would keep passing while
+  // the 32-bit branch rotted, which is how it rotted in the first place.
+  //
+  // The `nlist` one is the interesting case: reintroducing a 16-byte stride does
+  // not throw and does not reduce the symbol count. It returns the right number
+  // of symbols with plausible names, one entry off — which is exactly why it
+  // survived as long as it did.
+  {
+    name: '32-bit sections are read (not gated on the 64-bit form)',
+    file: 'src/macho.mjs',
+    find: `        const sectBase = off + (wide ? 72 : 56);  // the segment command's own size`,
+    replace: `        const sectBase = off + 72; // MUTATED: 64-bit base only`,
+    expect: /both sections are read|32-bit/,
+  },
+  {
+    name: "a 32-bit section's offset is read from offset 40, not align's",
+    file: 'src/macho.mjs',
+    find: `            offset: sc.readUInt32LE(wide ? 48 : 40),`,
+    replace: `            offset: sc.readUInt32LE(wide ? 48 : 44), // MUTATED: align's offset`,
+    expect: /file offset is read from its own field|32-bit/,
+  },
+  {
+    name: 'a 32-bit nlist is 12 bytes, not 16',
+    file: 'src/macho.mjs',
+    find: `  const nlistSize = thin.is64 ? 16 : 12;`,
+    replace: `  const nlistSize = 16; // MUTATED: 64-bit stride for both forms`,
+    expect: /12-byte nlist|32-bit/,
+  },
+
+  // The UUID's 16 bytes are at offset 8 of its own load command, which is the
+  // *last* of three in the fixture. Reading from offset 0 returns the `cmd` and
+  // `cmdsize` fields as if they were an identifier — a 24-character "UUID" that
+  // is really two integers, which is what a plausible-looking wrong value is.
+  {
+    name: "a UUID is read from offset 8 of its own command",
+    file: 'src/macho.mjs',
+    find: `        uuid = s.toString('hex', 8, 24).replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5');`,
+    replace: `        uuid = s.toString('hex', 0, 16).replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5'); // MUTATED: the command header`,
+    expect: /reads its LC_UUID|uuid/,
+  },
 ];
 
 function run(cmd, args, opts = {}) {

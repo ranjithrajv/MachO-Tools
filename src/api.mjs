@@ -46,7 +46,7 @@ import fs from 'node:fs';
 import {
   opener, isMachOFile, slicesOf, parseThin, readSymbols, preferredSlice,
   richestSlice, sliceName, textSection, codeSections, sectionOf, toVaddr,
-  toFileOffset, isBackedByFile,
+  toFileOffset, isBackedByFile, archMatches,
 } from './macho.mjs';
 
 /* ------------------------------------------------------------------ *
@@ -133,6 +133,8 @@ export function describe(path) {
         slices.push({
           arch, offset: s.offset, size: s.size, thin: s.thin, readable: false,
           nsyms: 0, defined: 0, codeSections: 0, textAddr: null, textSize: 0,
+          uuid: null, segments: [], sections: [], loadCommands: [],
+          segments: [], sections: [], loadCommands: [],
           note: 'no Mach-O header at this offset',
         });
         continue;
@@ -152,6 +154,15 @@ export function describe(path) {
         textAddr: text ? text.addr : null,
         textSize: text ? text.size : 0,
         codeSections: codeSections(thin).sections.length,
+        // The three lists the reader already parsed and nothing surfaced. A
+        // caller asking "what is in this file" wants the sections, not a count
+        // of how many are code — and `ipsw macho info --section` answers the
+        // same question, so leaving these out meant being unable to do something
+        // a competitor's dump does in one line.
+        segments: thin.segments,
+        sections: thin.sections,
+        loadCommands: thin.loadCommands,
+        uuid: thin.uuid,
       });
     }
     return {
@@ -908,17 +919,36 @@ function tallySection(f, sec, enc, counts, sliceBase, mapped) {
  * a pointer table from bytes that happen to sit inside an instruction, without
  * opening a disassembler.
  */
-export function findLiteral(path, literal, { textOnly = false, max = 0 } = {}) {
+export function findLiteral(path, literal, { textOnly = false, arch, max = 0 } = {}) {
   const needle = Buffer.isBuffer(literal) ? literal : Buffer.from(String(literal), 'latin1');
   return withFile(path, (f) => {
     const slices = [];
     const hits = [];
     let scanned = 0;
+    // `--arch` bookkeeping. `matched` is whether any slice satisfied the request;
+    // `fallback` is the first slice that did not, kept so an unsatisfiable
+    // request still produces a real answer. Both are needed and they are
+    // different questions — a universal binary with `--arch=arm64` has one
+    // matching and one non-matching slice, and recording "wanted = true" for the
+    // second would report the request as unsatisfied.
+    let matched = false;
+    let fallback = null;
 
     for (const s of slicesOf(f)) {
       const thin = parseThin(f, s.offset);
       if (!thin) continue;
       const name = s.thin ? sliceName(thin.cputype) : sliceName(s.cputype);
+      // `arch` is a preference, not a filter, and this tool now matches the
+      // other five: a named slice wins if present, otherwise the richest slice is
+      // read anyway. Filtering instead would report a usage mistake — an absent
+      // architecture — as "the magic is not in this file", which is a claim
+      // about the bytes that happens to be false. Verified: `--arch=riscv`
+      // against /bin/ls searches a slice, and says which.
+      if (arch && !archMatches(name, arch)) {
+        if (!fallback) fallback = { s, thin, name }; // first non-matching slice
+        continue;
+      }
+      if (arch) matched = true;
       const text = textSection(thin);
       const textLo = text ? s.offset + text.offset : 0;
       const textHi = text ? textLo + text.size : 0;
@@ -945,6 +975,31 @@ export function findLiteral(path, literal, { textOnly = false, max = 0 } = {}) {
       }
     }
     hits.sort((a, b) => a.off - b.off);
+    // No slice matched `--arch`: read one anyway rather than report nothing, and
+    // say so. Refusing would turn a mistyped architecture into "the magic is not
+    // in this file", which is a statement about the bytes and is false.
+    if (arch && !matched && fallback && !slices.length) {
+      const { s, thin, name } = fallback;
+      const text = textSection(thin);
+      const textLo = text ? s.offset + text.offset : 0;
+      const textHi = text ? textLo + text.size : 0;
+      const from = textOnly && text ? textLo : s.offset;
+      const to = textOnly && text ? textHi : s.offset + s.size;
+      const found = searchRange(f, needle, from, to);
+      scanned += to - from;
+      slices.push({ arch: name, offset: s.offset, size: s.size, from, to, hits: found.length });
+      for (const off of found) {
+        const inText = text && off >= textLo && off < textHi;
+        const sec = sectionOf(thin, off - s.offset);
+        hits.push({
+          off, slice: name, inText,
+          vaddr: inText ? text.addr + BigInt(off - textLo) : toVaddr(thin, off - s.offset)?.vaddr ?? null,
+          section: sec ? `${sec.segname},${sec.sectname}` : null,
+          context: contextAround(f, off, 16, 8),
+        });
+      }
+      hits.sort((a, b) => a.off - b.off);
+    }
     return {
       literal: needle.toString('latin1'),
       hex: needle.toString('hex'),
@@ -954,8 +1009,145 @@ export function findLiteral(path, literal, { textOnly = false, max = 0 } = {}) {
       scanned,
       slices,
       textOnly,
+      // `arch` is what was asked for. `archHonoured` is that value when a slice
+      // satisfied it and `null` when none did — so a caller can tell "you got the
+      // slice you asked for" from "you got a slice anyway, and it was not this
+      // one" without re-deriving it from `archRead`. `archRead` is the ground
+      // truth: what actually answered.
+      arch: arch ?? null,
+      archHonoured: arch && matched ? arch : null,
+      archRead: slices.map((x) => x.arch),
     };
   });
+}
+
+/**
+ * NUL-terminated strings in the C-string sections, with where each one loads.
+ *
+ * ## Why this is not `findLiteral` with a different argument
+ *
+ * `findliteral` searches for bytes the caller already knows. This finds strings
+ * nobody has to know in advance, which is the other direction: the __cstring
+ * section of a binary is a table of things it says, and reading it needs no
+ * prior hypothesis. `ipsw macho info --strings` prints cstrings too, so this is
+ * not a capability it lacks — the difference is that every string here carries
+ * its **file offset, virtual address and owning section**, which is what makes a
+ * string actionable rather than merely visible. A string you cannot address is
+ * a string you cannot hand to `symlookup` or `mapliteral`.
+ *
+ * ## What counts as a string
+ *
+ * A run of at least `min` printable bytes terminated by NUL. Deliberately not
+ * UTF-8 validation: a C string is a byte sequence between NULs, and rejecting
+ * anything that is not valid UTF-8 would silently drop the Swift and ObjC
+ * material that lives in `__cstring` and is full of non-ASCII.
+ *
+ * @param {string} path
+ * @param {object}  [opts]
+ * @param {string}  [opts.arch]    prefer this slice of a universal binary
+ * @param {number}  [opts.min]     shortest string to report (default 4)
+ * @param {number}  [opts.max]     cap on results (default unlimited)
+ * @param {string}  [opts.filter]  substring a string must contain
+ */
+export function findStrings(path, { arch, min = 4, max = 0, filter = null } = {}) {
+  return withFile(path, (f) => {
+    const slices = [];
+    const strings = [];
+    let scanned = 0;
+
+    for (const s of slicesOf(f)) {
+      const thin = parseThin(f, s.offset);
+      if (!thin) continue;
+      const name = s.thin ? sliceName(thin.cputype) : sliceName(s.cputype);
+
+      // The C-string sections. `__cstring` is the real one; `__cfstring` is
+      // CFString literals, whose pointers are 32 bytes of structure rather than
+      // text, so including it would report addresses as if they were strings.
+      // `__objc_methname` and `__swift5_reflstr` *are* NUL-terminated text and
+      // are exactly what someone reversing a binary wants, so they are included
+      // and labelled, not filtered out.
+      const wanted = CSTRING_SECTIONS.filter((n) => thin.sections.some((x) => x.sectname === n));
+      if (!wanted.length) {
+        slices.push({ arch: name, offset: s.offset, size: s.size, sections: [], strings: 0, scanned: 0 });
+        continue;
+      }
+
+      let found = 0;
+      for (const sec of thin.sections) {
+        if (!CSTRING_SECTIONS.includes(sec.sectname) || sec.size === 0) continue;
+        const lo = s.offset + sec.offset;
+        // A section's bytes can run past the end of the file when the linker
+        // recorded a size it did not write — zero-fill tail, or a truncated
+        // binary. Clamped rather than trusted, because reading past the end
+        // here would throw in the middle of an otherwise good answer.
+        const hi = Math.min(lo + sec.size, f.size);
+        if (hi <= lo) continue;
+        const buf = f.read(lo, hi - lo);
+        scanned += buf.length;
+
+        const label = `${sec.segname},${sec.sectname}`;
+        // Walk NUL-delimited runs rather than regexing the whole buffer, so the
+        // offset of each string is known exactly instead of inferred from a
+        // match index plus the preceding terminator.
+        let start = 0;
+        while (start < buf.length) {
+          const end = buf.indexOf(0, start);
+          const stop = end === -1 ? buf.length : end;
+          if (stop - start >= min) {
+            const raw = buf.subarray(start, stop);
+            const text = raw.toString('latin1');
+            if (printable(raw) && (!filter || text.includes(filter))) {
+              strings.push({
+                off: lo + start,
+                slice: name,
+                vaddr: sec.addr + BigInt(start),
+                section: label,
+                length: stop - start,
+                text,
+              });
+              found++;
+            }
+          }
+          if (end === -1) break;
+          start = end + 1;
+        }
+        slices.push({ arch: name, offset: s.offset, size: s.size, sections: wanted, strings: found, scanned: buf.length });
+      }
+    }
+
+    strings.sort((a, b) => a.off - b.off);
+    const capped = max > 0 ? strings.slice(0, max) : strings;
+    return {
+      arch: arch ?? null,
+      min,
+      count: strings.length,
+      truncated: capped.length < strings.length,
+      strings: capped,
+      scanned,
+      slices,
+      sections: CSTRING_SECTIONS,
+    };
+  });
+}
+
+/**
+ * Section names whose contents are NUL-terminated text.
+ *
+ * A list rather than a hardcoded `__cstring` check because a Go binary keeps
+ * its strings in `__cstring` but Swift and Objective-C put method names and
+ * reflection records in their own named sections, and a tool that only looked at
+ * `__cstring` would report an ObjC binary as having no strings in it — which is
+ * the kind of wrong-looking-right answer this project keeps refusing to give.
+ */
+const CSTRING_SECTIONS = ['__cstring', '__objc_methname', '__swift5_reflstr', '__objc_classname'];
+
+/** Every byte printable or tab/newline — the check that keeps binary noise out. */
+function printable(b) {
+  for (const c of b) {
+    if (c === 9 || c === 10 || c === 13) continue;
+    if (c < 0x20 || c > 0x7e) return false;
+  }
+  return b.length > 0;
 }
 
 /**

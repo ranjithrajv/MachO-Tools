@@ -172,11 +172,36 @@ for (const name of SKILLS) {
   };
 
   for (const flag of flags) {
-    // `--help` is handled in output.mjs before any parsing, and `--version` is
-    // the MCP server's; neither is a reader flag.
-    if (['help', 'version'].includes(flag)) continue;
+    // `--help` is handled before flag parsing, and `--version` is the MCP
+    // server's own; neither is a reader flag, so neither is claimed here.
+    //
+    // `--check` is the third kind: a flag belonging to `fixtures.mjs`, quoted in
+    // this skill because it documents how to verify the package. No reader accepts
+    // it, and asking a reader whether it does is a fair question whose answer is
+    // "no" — which is exactly what the check below reports. So it is excluded from
+    // *this* loop rather than from the tree, and the exclusion says why: a name in
+    // prose is not a promise that the flag means anything to the tool it is quoted
+    // near.
+    if (['help', 'version', 'check'].includes(flag)) continue;
     check(runFlag(flag), `${short}: --${flag} is accepted by a tool rather than silently ignored`);
   }
+
+  // The converse, and the one that actually protects a reader: no reader may
+  // accept a flag it does not implement. A tool that ignores `--check` instead of
+  // refusing it is the exact defect this package's own docs call a confident wrong
+  // answer, so it is asserted here rather than assumed.
+  const readers = ['describe', 'sym', 'symlookup', 'findcall', 'findliteral', 'mapliteral', 'a2o', 'o2a'];
+  const acceptingCheck = readers.filter((t) => {
+    const src = path.join(ROOT, 'src', `${t}.mjs`);
+    if (!fs.existsSync(src)) return false;
+    const r = spawnSync(process.execPath, [src, '--check'], { encoding: 'utf8' });
+    return r.status !== 2;
+  });
+  check(
+    acceptingCheck.length === 0,
+    `${short}: no reader accepts --check, which belongs to fixtures.mjs`,
+    acceptingCheck.join(', '),
+  );
 
   /* ---- 3. the claims that can be checked by running something ----- */
 

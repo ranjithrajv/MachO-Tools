@@ -55,7 +55,7 @@
  */
 import { requireBinary, FALLBACK_TARGET } from './target.mjs';
 import { searchSymbols } from './api.mjs';
-import { parseArgs, emitJSON, usage, count, EXIT } from './output.mjs';
+import { parseArgs, emitJSON, usage, count, EXIT, rejectUnknownFlags } from './output.mjs';
 
 const HELP = [
   'usage: node src/sym.mjs <pattern> [binary|bundle] [max] [options]',
@@ -83,6 +83,12 @@ if (flags.has('help') || flags.has('h')) {
   process.stdout.write(HELP.join('\n') + '\n');
   process.exit(EXIT.ok);
 }
+
+rejectUnknownFlags(
+  new Set(['regex', 'case-sensitive', 'all-imp', 'no-dedupe', 'arch', 'json']),
+  flags,
+  HELP,
+);
 
 if (!pattern) usage(HELP);
 

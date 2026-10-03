@@ -523,7 +523,12 @@ console.log('\n--json:');
 
 console.log('\na2o / o2a: address and file offset');
 {
-  const { addressToOffset, offsetToAddress } = await import('../src/api.mjs');
+  const { addressToOffset, offsetToAddress, findStrings } = await import('../src/api.mjs');
+
+  // `st` is used by the flag-rejection block below, which sits outside this
+  // block's scope. Declared here so it is visible to both, and set to null when
+  // the fixture is absent so a missing fixture skips rather than crashes.
+  const st = binaries.find((b) => b.stem === 'strings') ?? null;
   const zf = binaries.find((b) => b.stem === 'zerofill');
 
   if (!zf) {
@@ -649,6 +654,439 @@ console.log('\na2o / o2a: address and file offset');
         && run('o2a.mjs', ['notanoffset', '-b', zf.path]).code === 2,
       'a2o / o2a: a missing or malformed query is a usage error, exit 2',
     );
+  }
+
+  // Sections, segments, load commands, `--arch`, and `--strings`.
+  //
+  // These are the answers the reader had been parsing and throwing away, so the
+  // risk is not that they are wrong in an obvious way — it that they are quietly
+  // empty, which looks exactly like "this binary has no sections".
+  {
+    if (!st) {
+      skip('sections, segments and --strings', 'the strings fixture is missing — run npm run test:fixtures');
+    } else {
+      const { describe: describeFile } = await import('../src/api.mjs');
+      const d = describeFile(st.path);
+      const slice = d.slices[0];
+      check(
+        slice.sections.length === 2 && slice.sections.some((s) => s.sectname === '__cstring'),
+        'describe: reports every section, including one with no code in it',
+        `sections=${slice.sections.map((s) => s.sectname).join(',')}`,
+      );
+      check(
+        slice.segments.length >= 1 && slice.segments[0].segname === '__TEXT',
+        'describe: reports segments with their vm and file ranges',
+        `segments=${slice.segments.length}`,
+      );
+      check(
+        slice.loadCommands.length === 2
+          && slice.loadCommands.every((c) => typeof c.name === 'string' && c.name.startsWith('LC_')),
+        'describe: reports every load command by name',
+        slice.loadCommands.map((c) => c.name).join(','),
+      );
+      check(
+        slice.sections.some((s) => s.sectname === '__text')
+          && slice.sections.find((s) => s.sectname === '__text').addr === slice.textAddr,
+        'describe: a section address agrees with the __text address describe already reported',
+      );
+
+      // The code/data marking must come from the same predicate findcall types its
+      // scan by. Re-testing it here would be a second copy that could disagree.
+      const textSec = slice.sections.find((s) => s.sectname === '__text');
+      const cstr = slice.sections.find((s) => s.sectname === '__cstring');
+      check(
+        (textSec.flags & 0x80000000) !== 0 && (cstr.flags & 0x80000000) === 0,
+        'describe: marks __text as code and __cstring as data, from the section flags',
+        `text=0x${textSec.flags.toString(16)} cstring=0x${cstr.flags.toString(16)}`,
+      );
+
+      // --strings. The expected texts are written out here rather than imported
+      // from the generator, because a test that compares the reader against the
+      // generator only proves the two agree; these names also state what the
+      // section is *for*, which a number cannot.
+      const found = findStrings(st.path, { min: 4 });
+      check(
+        found.count === 4,
+        '--strings: reads the four NUL-terminated strings out of __cstring',
+        `count=${found.count}`,
+      );
+      check(
+        found.strings.every((s) => s.section === '__TEXT,__cstring' && typeof s.vaddr === 'bigint'),
+        '--strings: each carries its section and a real address',
+      );
+      check(
+        found.strings.map((s) => s.text).join('|') ===
+          ['macho-fixture-alpha', 'macho-fixture-beta', 'a short one',
+            'macho-fixture-gamma-with-a-longer-body-to-exceed-the-default-minimum'].join('|'),
+        '--strings: the text is exactly what the generator wrote, in order',
+        found.strings.map((s) => s.text).join('|'),
+      );
+      // Addresses must be consecutive by construction: the first string starts at
+      // the section's own address. If that holds, the arithmetic is right.
+      check(
+        found.strings[0].vaddr === cstr.addr,
+        '--strings: the first string is at the start of the __cstring section',
+        `got 0x${found.strings[0].vaddr.toString(16)}, section at 0x${cstr.addr.toString(16)}`,
+      );
+      const longOnly = findStrings(st.path, { min: 20 });
+      check(
+        longOnly.count === 1 && longOnly.strings[0].text.startsWith('macho-fixture-gamma'),
+        '--strings: --min filters by length',
+        `count=${longOnly.count}`,
+      );
+      const filtered = findStrings(st.path, { min: 4, filter: 'beta' });
+      check(
+        filtered.count === 1 && filtered.strings[0].text === 'macho-fixture-beta',
+        '--strings: --filter selects by substring',
+        `count=${filtered.count}`,
+      );
+      check(
+        run('findliteral.mjs', ['--strings', '--json', st.path]).code === 0
+          && run('findliteral.mjs', ['--strings', '--json', '--min=20', st.path]).code === 0,
+        '--strings: exit 0 when strings were found',
+      );
+
+      // A binary with no C-string section must say so rather than report none.
+      const noneHere = findStrings(zf.path, { min: 4 });
+      check(
+        noneHere.count === 0,
+        '--strings: a binary with no cstring section finds none',
+        `count=${noneHere.count}`,
+      );
+      const noneCli = run('findliteral.mjs', ['--strings', zf.path]);
+      check(
+        noneCli.code === 1 && /NUL-terminated/.test(`${noneCli.stdout}${noneCli.stderr}`),
+        '--strings: says which sections it looked in, and exits 1',
+        `exit ${noneCli.code}: ${(noneCli.stdout + noneCli.stderr).slice(-120)}`,
+      );
+
+      // --arch on describe and findliteral, the two that lacked it.
+      const uni = binaries.find((b) => b.stem === 'universal');
+      if (uni) {
+        const all = describeFile(uni.path);
+        check(all.slices.length === 2, 'universal: describe sees both slices with no --arch');
+        const slim = JSON.parse(run('describe.mjs', ['--json', '--arch=arm64', uni.path]).stdout);
+        check(
+          slim.data.slices.length === 1 && slim.data.slices[0].arch === 'arm64' && slim.data.fat === true,
+          'describe --arch: narrows to one slice and still reports the file as universal',
+          `slices=${slim.data.slices.length}`,
+        );
+        const miss = JSON.parse(run('describe.mjs', ['--json', '--arch=riscv', uni.path]).stdout);
+        check(
+          miss.data.slices.length === 2 && miss.notes.some((n) => /matched none/.test(n)),
+          'describe --arch: an architecture that is absent shows every slice and says so',
+          `notes=${JSON.stringify(miss.notes)}`,
+        );
+
+        // The needle is a symbol name, which lives in each slice's own string table — so
+        // it is present twice in the fat file and narrowing to one architecture
+        // must halve the hit count rather than lose it. That is a stronger check
+        // than "it still found something": a filter searching the wrong slice finds
+        // nothing, and one searching both returns the original number.
+        //
+        // `target_fn` is a name the generator writes into both slices, verified
+        // above rather than assumed — an earlier version of this test used a name
+        // that exists in neither and passed for the wrong reason by comparing two
+        // zeros.
+        const NEEDLE = 'target_fn';
+        const litAll = JSON.parse(run('findliteral.mjs', ['--json', NEEDLE, uni.path]).stdout);
+        const litX86 = JSON.parse(run('findliteral.mjs', ['--json', '--arch=x86_64', NEEDLE, uni.path]).stdout);
+        const litArm = JSON.parse(run('findliteral.mjs', ['--json', '--arch=arm64', NEEDLE, uni.path]).stdout);
+        check(
+          litAll.data.archRead.length === 2 && litAll.data.count === litX86.data.count + litArm.data.count,
+          'findliteral --arch: reads every slice when none is named, and each half is findable alone',
+          `all=${litAll.data.count} x86=${litX86.data.count} arm=${litArm.data.count}`,
+        );
+        check(
+          litX86.data.archRead.length === 1 && litX86.data.archRead[0] === 'x86_64'
+            && litX86.data.archHonoured === 'x86_64' && litX86.data.count > 0,
+          'findliteral --arch: narrows to the named slice, reports which, and still finds the needle there',
+          `read=${litX86.data.archRead} honoured=${litX86.data.archHonoured} count=${litX86.data.count}`,
+        );
+        check(
+          litArm.data.archRead.length === 1 && litArm.data.archRead[0] === 'arm64'
+            && litArm.data.archHonoured === 'arm64' && litArm.data.count > 0,
+          'findliteral --arch: the same holds for the other slice',
+          `read=${litArm.data.archRead} count=${litArm.data.count}`,
+        );
+        // Every hit carries the slice it came from, so a narrowed result is
+        // self-identifying without needing the wrapper to be trusted.
+        check(
+          litX86.data.hits.every((h) => h.slice === 'x86_64'),
+          'findliteral --arch: each hit names the slice it came from',
+          JSON.stringify([...new Set(litX86.data.hits.map((h) => h.slice))]),
+        );
+        const litMiss = JSON.parse(run('findliteral.mjs', ['--json', '--arch=riscv', NEEDLE, uni.path]).stdout);
+        check(
+          litMiss.data.archHonoured === null && litMiss.data.archRead.length === 1 && litMiss.data.count > 0,
+          'findliteral --arch: an absent architecture still answers, from one slice, and admits it did not get the one asked for',
+          `honoured=${litMiss.data.archHonoured} read=${litMiss.data.archRead} count=${litMiss.data.count}`,
+        );
+      }
+    }
+  }
+
+  // The 32-bit path, which every other fixture in the corpus avoided.
+  //
+  // Not a portability exercise: the corpus was 100% 64-bit, so three separate
+  // defects in the 32-bit branch had no fixture that could reach them. All three
+  // are the same mistake — a 32-bit field read at the 64-bit offset — and all
+  // three produced wrong answers rather than errors. The assertions here are
+  // written against the values `<mach-o/loader.h>` declares, and the fixture
+  // generator's own self-check pins the same numbers, so a reader and a test that
+  // agree on being wrong would still fail.
+  {
+    const b32 = binaries.find((x) => x.stem === 'bits32');
+    if (!b32) {
+      skip('the 32-bit reader', 'the bits32 fixture is missing — run npm run test:fixtures');
+    } else {
+      const { describe: describeFile } = await import('../src/api.mjs');
+      const { lookupAddress: lookUp } = await import('../src/api.mjs');
+      const d = describeFile(b32.path);
+      const s = d.slices[0];
+
+      check(
+        s && s.bits === 32,
+        'a 32-bit slice is reported as 32-bit',
+        `bits=${s?.bits}`,
+      );
+
+      // Section table: 68-byte entries after a 56-byte LC_SEGMENT, which is a
+      // different shape and not a scaled version of the 64-bit one.
+      check(
+        s.sections.length === 2,
+        '32-bit: both sections are read (68-byte entries after a 56-byte LC_SEGMENT)',
+        `sections=${s.sections.map((x) => x.sectname).join(',') || 'none'}`,
+      );
+      const text32 = s.sections.find((x) => x.sectname === '__text');
+      const data32 = s.sections.find((x) => x.sectname === '__data');
+      // `section.offset` is at 40 in the 32-bit form and 48 in the 64-bit one;
+      // 44 is `align`'s offset in both. Reading it at 44 yields 2 (the log2
+      // alignment) rather than 244, which is how this defect presents.
+      check(
+        text32 && text32.offset === 244,
+        "32-bit: a section's file offset is read from its own field, not align's",
+        `got ${text32?.offset}, expected 244`,
+      );
+      check(
+        text32 && text32.size === 320 && data32 && data32.size === 14,
+        '32-bit: section sizes are read as 32-bit fields',
+        `text=${text32?.size} data=${data32?.size}`,
+      );
+      check(
+        (text32?.flags & 0x80000000) !== 0 && (data32?.flags & 0x80000000) === 0,
+        '32-bit: section flags are read from offset 56, not 64',
+        `text=0x${text32?.flags.toString(16)} data=0x${data32?.flags.toString(16)}`,
+      );
+      check(
+        s.textAddr === 0x80480f4n && s.textAddr <= 0xffffffffn,
+        '32-bit: __text is at the 32-bit base plus its file offset',
+        `got ${s.textAddr === null ? 'null' : `0x${s.textAddr.toString(16)}`}`,
+      );
+      check(
+        s.loadCommands.map((c) => c.name).join(',') === 'LC_SEGMENT,LC_SYMTAB',
+        '32-bit: the load commands are named, using the non-_64 form',
+        s.loadCommands.map((c) => c.name).join(','),
+      );
+      check(
+        s.segments[0]?.vmaddr === 0x8048000n,
+        "32-bit: the segment's vmaddr is a 32-bit field at the same offset",
+        `got ${s.segments[0]?.vmaddr}`,
+      );
+
+      // Symbol table: `nlist` is 12 bytes with a 32-bit `n_value`, against 16 and
+      // 64. This is the one that produced *plausible* output — a wrong stride still
+      // yields the right number of "defined" symbols and names that look like
+      // names, so the check is on the names and the exact addresses.
+      check(
+        lookUp(b32.path, 0x80481f4n).function === 'target_fn',
+        '32-bit: a 12-byte nlist resolves the symbol to the right name',
+        `got ${JSON.stringify(lookUp(b32.path, 0x80481f4n).function)}`,
+      );
+      const ca = lookUp(b32.path, 0x8048134n);
+      check(
+        ca.function === 'caller_a' && ca.start === 0x8048134n && ca.next === 0x8048174n,
+        '32-bit: consecutive symbols are exactly 12 bytes apart in the walk',
+        `got ${ca.function} at ${ca.start}, next ${ca.next}`,
+      );
+      check(
+        lookUp(b32.path, 0x8048174n).function === 'caller_b',
+        '32-bit: the third symbol is also correct',
+        `got ${JSON.stringify(lookUp(b32.path, 0x8048174n).function)}`,
+      );
+
+      // An address lookup inside a 32-bit section must attribute the section. With
+      // sections unreadable this reported "not in a section", which is the symptom
+      // that led to the `if (wide)` gate being removed.
+      check(
+        text32 && s.sections.some((x) => x.sectname === '__text' && x.addr === 0x80480f4n),
+        '32-bit: the section address and describe\'s __text address agree',
+      );
+
+      // i386 and x86_64 encode a direct call identically, so the scan must work
+      // unchanged — which is also the check that the section table is being used
+      // to type the scan rather than merely parsed.
+      const { findCalls: calls } = await import('../src/api.mjs');
+      check(
+        calls(b32.path, 0x80481f4n).count === 2,
+        '32-bit: both encoded call/jmp sites are found',
+        `got ${calls(b32.path, 0x80481f4n).count}`,
+      );
+      check(
+        calls(b32.path, 0x80481f4n).typed === true,
+        '32-bit: the scan is typed, so section flags really were read',
+        `typed=${calls(b32.path, 0x80481f4n).typed}`,
+      );
+
+      // The CLI and JSON agree, because a second code path reading the same
+      // binary is where a per-form offset would drift.
+      const cli = run('describe.mjs', ['--json', '--sections', b32.path]);
+      const env = JSON.parse(cli.stdout);
+      check(
+        env.data.slices[0].bits === 32
+          && env.data.slices[0].sections.length === 2
+          && env.data.slices[0].sections.find((x) => x.sectname === '__text').offset === 244,
+        '32-bit: --json over the CLI reports the same sections as the API',
+        JSON.stringify(env.data.slices[0].sections.map((x) => `${x.sectname}@${x.offset}`)),
+      );
+
+      // And `o2a`/`a2o`, which map both directions and so exercise the 32-bit
+      // offsets against each other.
+      const { addressToOffset, offsetToAddress } = await import('../src/api.mjs');
+      const asOff = addressToOffset(b32.path, 0x8048134n);
+      check(
+        asOff.offset === 0x134 && asOff.mapped === true && asOff.section === '__TEXT,__text',
+        '32-bit: a __text address maps back to its own file offset, in its section',
+        `got offset=${asOff.offset} mapped=${asOff.mapped} section=${asOff.section}`,
+      );
+      const back = offsetToAddress(b32.path, 0x134);
+      check(
+        back.queries[0].slices[0].vaddr === `0x${(0x8048134n).toString(16)}`,
+        '32-bit: that offset maps back to the same address',
+        `got ${back.queries[0].slices[0].vaddr}`,
+      );
+    }
+  }
+
+  // The UUID, which identifies a build rather than describing one.
+  //
+  // A UUID is the only field in the file that says *which* build this is, as
+  // opposed to what is in it — two binaries can have identical sizes, symbol
+  // counts and section layouts and still differ, and this is what tells them
+  // apart. `ipsw macho info --uuid` prints it; `describe` now does too.
+  //
+  // The corpus deliberately covers both halves. Nine fixtures have no LC_UUID and
+  // one does, so "always returns a value" and "never returns a value" both fail —
+  // and the fixture with the UUID carries it as the *last* of three load commands,
+  // so a reader that read the bytes from the wrong command would produce 16 bytes
+  // of `cmd` and `cmdsize` and format them into a perfectly plausible identifier.
+  {
+    const withUuid = binaries.find((x) => x.stem === 'stripped');
+    const { describe: describeFile } = await import('../src/api.mjs');
+    const WANT = 'a1b2c3d4-e5f6-4708-9a0b-1c2d3e4f5061';
+
+    if (!withUuid) {
+      skip('the LC_UUID read', 'the stripped fixture is missing — run npm run test:fixtures');
+    } else {
+      const s = describeFile(withUuid.path).slices[0];
+      check(
+        s.uuid === WANT,
+        'an LC_UUID is read, and formatted with the dashes the raw bytes lack',
+        `got ${s.uuid}, expected ${WANT}`,
+      );
+      check(
+        s.loadCommands.length === 3 && s.loadCommands[2].name === 'LC_UUID',
+        'the UUID is read from its own load command, which is the last of three',
+        s.loadCommands.map((c) => c.name).join(','),
+      );
+    }
+
+    // The absence, across the rest of the *generated* corpus. This is the half that
+    // catches a reader that falls back to zeros, which would otherwise format
+    // into a perfectly plausible `00000000-0000-0000-0000-000000000000`.
+    //
+    // Scoped to generated fixtures deliberately: a real system binary almost
+    // always *does* carry a UUID, so asserting `null` over the whole discovered
+    // corpus would fail on the machine running the tests for the right reason and
+    // the wrong reason at once.
+    const generatedNoUuid = generated.filter((x) => x.stem !== 'stripped');
+    const bad = generatedNoUuid.filter((x) =>
+      describeFile(x.path).slices.some((s) => s.uuid !== null),
+    );
+    check(
+      generatedNoUuid.length >= 8 && bad.length === 0,
+      'a binary with no LC_UUID reports no UUID rather than inventing one',
+      `${bad.map((x) => x.stem).join(',') || 'none'} of ${generatedNoUuid.length} checked`,
+    );
+
+    // Both surfaces, because a UUID that reaches JSON but not the text block
+    // would still leave the common case unreadable.
+    if (withUuid) {
+      const cli = run('describe.mjs', [withUuid.path]);
+      check(
+        cli.stdout.includes(WANT),
+        'describe prints the UUID in its text output too',
+        cli.stdout.split('\n').slice(2, 5).join(' | '),
+      );
+      const env = JSON.parse(run('describe.mjs', ['--json', withUuid.path]).stdout);
+      check(
+        env.data.slices[0].uuid === WANT,
+        'and --json carries the identical string',
+        env.data.slices[0].uuid,
+      );
+    }
+  }
+
+  // An unrecognised flag is a usage error on every tool, and says what it meant.
+  //
+  // This is the defect `FEATURE-PARITY-IPSW.md` §4.1 records: `sym --regexx`
+  // used to answer a *different question* and exit 1, so a typo produced a
+  // confident wrong answer. The MCP layer rejected unknown arguments from the
+  // start; this asserts the CLIs now match it.
+  {
+    const { TOOLS } = await import('../src/output.mjs');
+    const ignored = [];
+    const stillWorks = [];
+    for (const t of TOOLS) {
+      const r = run(`${t}.mjs`, ['--definitely-not-a-flag', '--json']);
+      if (r.code !== 2) ignored.push(`${t}: exit ${r.code}`);
+      if (!/unknown flag/.test(r.stderr)) ignored.push(`${t}: said ${JSON.stringify(r.stderr.slice(0, 60))}`);
+    }
+    check(ignored.length === 0, 'every tool rejects an unrecognised flag with exit 2', ignored.join('; '));
+
+    const typo = run('sym.mjs', ['--regexx', 'pop', st ? st.path : '--json']);
+    check(
+      typo.code === 2 && /did you mean --regex/.test(typo.stderr),
+      'a near-miss flag is corrected by name, not just refused',
+      `exit ${typo.code}: ${typo.stderr.slice(-60)}`,
+    );
+
+    // Every flag each tool documents must still be accepted, or this has broken
+    // working commands to stop one silent no-op.
+    const bin = binaries.find((b) => b.stem === 'populated')?.path;
+    if (bin) {
+      const invocations = [
+        ['describe.mjs', ['--sections', '--segments', '--loads', bin]],
+        ['sym.mjs', ['--regex', '--case-sensitive', '--all-imp', '--no-dedupe', 'pop', bin]],
+        ['symlookup.mjs', ['--arch=x86_64', '0x100000120', '-b', bin]],
+        ['findcall.mjs', ['--list', '--include-data', bin]],
+        ['findcall.mjs', ['--include-data', '0x100000220', bin]],
+        ['mapliteral.mjs', ['pop', bin]],
+        ['a2o.mjs', ['--arch=x86_64', '0x100000120', '-b', bin]],
+        ['o2a.mjs', ['0x120', '-b', bin]],
+        ['findliteral.mjs', ['--text', 'pop', bin]],
+        ['findliteral.mjs', ['--arch=x86_64', '--strings', '--min=4', bin]],
+      ];
+      for (const [tool, args] of invocations) {
+        const r = run(tool, args);
+        if (r.code === 2) stillWorks.push(`${tool} ${args.join(' ')}`);
+      }
+      check(
+        stillWorks.length === 0,
+        'every documented flag combination is still accepted',
+        stillWorks.join('; '),
+      );
+    }
   }
 
   // `--help` and `-h` must exit 0 on every tool. Four of the six that predate

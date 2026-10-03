@@ -71,9 +71,20 @@ const OUT = path.join(HERE, 'fixtures');
  * rather than catch it. The builder must be an independent witness.
  */
 const MH_MAGIC_64 = 0xfeedfacf;
+const MH_MAGIC_32 = 0xfeedface;
 const FAT_MAGIC = 0xcafebabe;
+const LC_SEGMENT = 0x1;
 const LC_SEGMENT_64 = 0x19;
 const LC_SYMTAB = 0x2;
+const LC_UUID = 0x1b;
+
+/**
+ * The UUID planted in `stripped.macho`, so the expected value in an assertion is
+ * a constant in the generator next to the bytes that produce it, not a hex string
+ * copied out of the reader's own output — which is the shape of a test that passes
+ * with the reader broken.
+ */
+const FIXTURE_UUID = 'a1b2c3d4-e5f6-4708-9a0b-1c2d3e4f5061';
 const CPU_X86_64 = 0x01000007;
 const CPU_ARM64 = 0x0100000c;
 
@@ -111,8 +122,22 @@ const HEADER_PLUS_LOADCMDS = 32 + (72 + 80 * 2) + 24;
  */
 const headerPlusLoadcmds = (nsects = 2) => 32 + (72 + 80 * nsects) + 24;
 
+/**
+ * The 32-bit counterparts of the three constants above.
+ *
+ * A 32-bit Mach-O has a 28-byte `mach_header`, a 56-byte `LC_SEGMENT` and 68-byte
+ * `section` entries, so its section data starts 68 bytes earlier than the 64-bit
+ * form's does. And its addresses must *fit* in 32 bits, which rules out
+ * `0x100000000` entirely: `VMADDR_BASE_32` is a plausible i386 base instead, so
+ * that an address that accidentally gets truncated shows up as a wrong answer
+ * rather than as a value that happens to survive.
+ */
+const VMADDR_BASE_32 = 0x8048000n;
+const HEADER_PLUS_LOADCMDS_32 = 28 + (56 + 68 * 2) + 24;
+const headerPlusLoadcmds32 = (nsects = 2) => 28 + (56 + 68 * nsects) + 24;
+
 /** The vaddr of the `__text` section, given its file offset. */
-const textVaddr = (textOffset) => VMADDR_BASE + BigInt(textOffset);
+const textVaddr = (textOffset, base = VMADDR_BASE) => base + BigInt(textOffset);
 
 /* ------------------------------------------------------------------ *
  * builders
@@ -134,14 +159,28 @@ const textVaddr = (textOffset) => VMADDR_BASE + BigInt(textOffset);
  * 180,760 bytes of a real binary, and offset 0x1000 — the first byte of `__text`
  * — comes back as being inside `__bss`.
  */
-function thinMachO({ cputype, text, data, dataFlags = S_REGULAR, symbols, textFlags = S_ATTR_PURE_INSTRUCTIONS | 0x4, zerofill = null }) {
+function thinMachO({ cputype, text, data, dataFlags = S_REGULAR, symbols, textFlags = S_ATTR_PURE_INSTRUCTIONS | 0x4, zerofill = null, bits = 64, base = VMADDR_BASE, uuid = null }) {
   const segname = '__TEXT';
+  const is64 = bits === 64;
   const nsects = zerofill ? 3 : 2;
-  const ncmds = 2;
-  const headerSize = 32;
-  const segCmdSize = 72 + 80 * nsects;        // LC_SEGMENT_64 + one section_64 each
+  const ncmds = uuid ? 3 : 2;
+  // The three sizes that differ between the two forms. A 32-bit Mach-O has a
+  // 28-byte mach_header, an `LC_SEGMENT` (not `_64`) whose own header is 56 bytes
+  // with `nsects` at offset 48, and 68-byte `section` entries — so it is not the
+  // 64-bit layout with smaller numbers anywhere.
+  const headerSize = is64 ? 32 : 28;
+  const segCmdHeader = is64 ? 72 : 56;
+  const sectSize = is64 ? 80 : 68;
+  const segCmdSize = segCmdHeader + sectSize * nsects;
   const symtabCmdSize = 24;
-  const loadCommandsSize = segCmdSize + symtabCmdSize;
+  // `lc_uuid` is 24 bytes in both forms: cmd, cmdsize, then the 16-byte value.
+  // Unlike everything else in this header it does not vary with the word size,
+  // because it carries a fixed-size byte string rather than an address.
+  const uuidCmdSize = uuid ? 24 : 0;
+  const loadCommandsSize = segCmdSize + symtabCmdSize + uuidCmdSize;
+  // `nlist` is 16 bytes in the 64-bit form and 12 in the 32-bit one, which moves
+  // the string table and therefore every offset after it.
+  const nlistSize = is64 ? 16 : 12;
 
   // Section and symbol data start right after the load commands.
   const textOffset = headerSize + loadCommandsSize;
@@ -162,22 +201,27 @@ function thinMachO({ cputype, text, data, dataFlags = S_REGULAR, symbols, textFl
   }
 
   const symtabOffset = dataOffset + data.length;
-  const nlist = Buffer.alloc(symbols.length * 16);
+  const nlist = Buffer.alloc(symbols.length * nlistSize);
   symbols.forEach((s, i) => {
-    const at = i * 16;
-    nlist.writeUInt32LE(strOffsets.get(s.name), at);
-    nlist[at + 4] = s.type;
-    nlist[at + 5] = s.sect;                 // n_sect
-    nlist.writeUInt16LE(0, at + 6);         // n_desc
-    nlist.writeBigUInt64LE(s.value, at + 8);
+    const at = i * nlistSize;
+    nlist.writeUInt32LE(strOffsets.get(s.name), at);   // n_strx
+    nlist[at + 4] = s.type;                            // n_type
+    nlist[at + 5] = s.sect;                            // n_sect
+    nlist.writeUInt16LE(0, at + 6);                    // n_desc
+    if (is64) nlist.writeBigUInt64LE(s.value, at + 8); // n_value, 64-bit
+    else nlist.writeUInt32LE(Number(s.value), at + 8);  // n_value, 32-bit
   });
   const strOffset = symtabOffset + nlist.length;
   const totalSize = strOffset + strTable.length;
 
   const buf = Buffer.alloc(totalSize, 0);
 
-  // ---- mach_header_64
-  buf.writeUInt32LE(MH_MAGIC_64, 0);
+  // ---- mach_header / mach_header_64
+  // The 32-bit form has no `reserved` field, so `flags` sits at 24 in the 64-bit
+  // header and at 24 in the 32-bit one too — but `sizeofcmds` is at 20 in both. The
+  // difference that matters downstream is the 4-byte header, already handled by
+  // `headerSize`.
+  buf.writeUInt32LE(is64 ? MH_MAGIC_64 : MH_MAGIC_32, 0);
   buf.writeInt32LE(cputype, 4);
   buf.writeInt32LE(3, 8);                   // cpusubtype
   buf.writeUInt32LE(2, 12);                 // filetype: MH_EXECUTE
@@ -185,56 +229,119 @@ function thinMachO({ cputype, text, data, dataFlags = S_REGULAR, symbols, textFl
   buf.writeUInt32LE(loadCommandsSize, 20);
   buf.writeUInt32LE(S_ATTR_PURE_INSTRUCTIONS, 24); // flags
 
-  // ---- LC_SEGMENT_64
+  // ---- LC_SEGMENT / LC_SEGMENT_64
   let o = headerSize;
   const seg = o;
-  buf.writeUInt32LE(LC_SEGMENT_64, o);
+  buf.writeUInt32LE(is64 ? LC_SEGMENT_64 : LC_SEGMENT, o);
   buf.writeUInt32LE(segCmdSize, o + 4);
   buf.write(segname, o + 8, 'latin1');
-  buf.writeBigUInt64LE(VMADDR_BASE, o + 24);      // vmaddr
-  // `vmsize` covers the zero-fill range as well as the file, which is what makes
-  // an address inside `__bss` genuinely *mapped* — so a reader has to distinguish
-  // "mapped with no byte behind it" from "not in this binary", and the segment is
-  // where that distinction comes from.
-  buf.writeBigUInt64LE(
-    zerofill
-      ? zerofill.addr + BigInt(zerofill.size) - VMADDR_BASE
-      : BigInt(totalSize),
-    o + 32,
-  );                                             // vmsize
-  buf.writeBigUInt64LE(BigInt(0), o + 40);        // fileoff
-  buf.writeBigUInt64LE(BigInt(totalSize), o + 48);// filesize
-  buf.writeUInt32LE(5, o + 56);                   // maxprot
-  buf.writeUInt32LE(5, o + 60);                   // initprot
-  buf.writeUInt32LE(nsects, o + 64);             // nsects
-  buf.writeUInt32LE(0, o + 68);                   // flags
+  if (is64) {
+    buf.writeBigUInt64LE(base, o + 24);              // vmaddr
+    // `vmsize` covers the zero-fill range as well as the file, which is what makes
+    // an address inside `__bss` genuinely *mapped* — so a reader has to distinguish
+    // "mapped with no byte behind it" from "not in this binary", and the segment is
+    // where that distinction comes from.
+    buf.writeBigUInt64LE(
+      zerofill ? zerofill.addr + BigInt(zerofill.size) - base : BigInt(totalSize),
+      o + 32,
+    );                                             // vmsize
+    buf.writeBigUInt64LE(BigInt(0), o + 40);        // fileoff
+    buf.writeBigUInt64LE(BigInt(totalSize), o + 48);// filesize
+    buf.writeUInt32LE(5, o + 56);                   // maxprot
+    buf.writeUInt32LE(5, o + 60);                   // initprot
+    buf.writeUInt32LE(nsects, o + 64);               // nsects
+    buf.writeUInt32LE(0, o + 68);                   // flags
+  } else {
+    // 32-bit: every address is 4 bytes, so each field is 4 bytes earlier than in
+    // the 64-bit form. This is the whole reason the reader's 32-bit path needs
+    // its own offsets rather than the 64-bit ones scaled — they do not scale.
+    buf.writeUInt32LE(Number(base), o + 24); // vmaddr
+    buf.writeUInt32LE(
+      zerofill ? Number(zerofill.addr + BigInt(zerofill.size) - base) : totalSize,
+      o + 28,
+    );                                             // vmsize
+    buf.writeUInt32LE(0, o + 32);                   // fileoff
+    buf.writeUInt32LE(totalSize, o + 36);           // filesize
+    buf.writeUInt32LE(5, o + 40);                   // maxprot
+    buf.writeUInt32LE(5, o + 44);                   // initprot
+    buf.writeUInt32LE(nsects, o + 48);               // nsects
+    buf.writeUInt32LE(0, o + 52);                   // flags
+  }
 
-  // ---- section_64: __text (instructions)
-  let s = seg + 72;
-  buf.write('__text', s, 'latin1');
-  buf.write(segname, s + 16, 'latin1');
-  // addr = segment vmaddr + section file offset, *not* the segment's own vmaddr.
-  buf.writeBigUInt64LE(textVaddr(textOffset), s + 32);
-  buf.writeBigUInt64LE(BigInt(text.length), s + 40);  // size
-  buf.writeUInt32LE(textOffset, s + 48);
-  buf.writeUInt32LE(2, s + 52);                       // align
-  // `>>> 0` for the same reason as `arm64BL`: `S_ATTR_PURE_INSTRUCTIONS` is
-  // 0x80000000, so any `|` against it yields a *signed* int32 and the write
-  // throws on a negative. This file has now reproduced that mistake twice while
-  // writing the fixtures, which is a decent argument for how easy it is to make.
-  buf.writeUInt32LE((textFlags >>> 0), s + 64);
+  // ---- the section entries
+  //
+  // One writer for both forms, because the layouts are not the same shape at a
+  // different scale and writing each separately is how the 64-bit-only assumption
+  // got in here in the first place. The per-form offsets:
+  //
+  //   field       section_64   section
+  //   addr            32          32
+  //   size            40          36
+  //   offset          48          40
+  //   align           52          44
+  //   reloff          56          48
+  //   nreloc          60          52
+  //   flags           64          56
+  //   entry size      80          68
+  //
+  // `addr` is the only field at the same offset in both, because the two 16-byte
+  // name fields above it are the same size in both. Each 32-bit field after it
+  // shifts the next one 4 bytes earlier, which is why `flags` sits 8 bytes apart
+  // and why the entries differ in length by 12 rather than by a factor.
+  const writeSection = ({ at, sectname, secSegname, addr, size, offset, align, flags }) => {
+    buf.write(sectname, at, 'latin1');
+    buf.write(secSegname, at + 16, 'latin1');
+    if (is64) {
+      buf.writeBigUInt64LE(addr, at + 32);
+      buf.writeBigUInt64LE(BigInt(size), at + 40);
+      buf.writeUInt32LE(offset, at + 48);
+      buf.writeUInt32LE(align, at + 52);
+      buf.writeUInt32LE(0, at + 56);        // reloff
+      buf.writeUInt32LE(0, at + 60);        // nreloc
+      buf.writeUInt32LE(flags >>> 0, at + 64);
+    } else {
+      buf.writeUInt32LE(Number(addr), at + 32);
+      buf.writeUInt32LE(size, at + 36);
+      buf.writeUInt32LE(offset, at + 40);
+      buf.writeUInt32LE(align, at + 44);
+      buf.writeUInt32LE(0, at + 48);        // reloff
+      buf.writeUInt32LE(0, at + 52);        // nreloc
+      buf.writeUInt32LE(flags >>> 0, at + 56);
+      // reserved1 (60) and reserved2 (64) stay as the zero-fill the buffer was
+      // allocated with, which is what they are on every real binary.
+    }
+  };
 
-  // ---- section_64: __data (data, deliberately inside __TEXT)
-  s = seg + 72 + 80;
-  buf.write('__data', s, 'latin1');
-  buf.write(segname, s + 16, 'latin1');
-  buf.writeBigUInt64LE(VMADDR_BASE + BigInt(dataOffset), s + 32);
-  buf.writeBigUInt64LE(BigInt(data.length), s + 40);
-  buf.writeUInt32LE(dataOffset, s + 48);
-  buf.writeUInt32LE(2, s + 52);
-  buf.writeUInt32LE(dataFlags, s + 64);
+  const sectBase = seg + segCmdHeader;
 
-  // ---- section_64: __bss (zero-fill — address range, no bytes)
+  writeSection({
+    at: sectBase,
+    sectname: '__text',
+    secSegname: segname,
+    // addr = segment vmaddr + section file offset, *not* the segment's own vmaddr.
+    addr: textVaddr(textOffset, base),
+    size: text.length,
+    offset: textOffset,
+    align: 2,
+    // `>>> 0` for the same reason as `arm64BL`: `S_ATTR_PURE_INSTRUCTIONS` is
+    // 0x80000000, so any `|` against it yields a *signed* int32 and the write
+    // throws on a negative. This file has now reproduced that mistake twice while
+    // writing the fixtures, which is a decent argument for how easy it is to make.
+    flags: textFlags,
+  });
+
+  writeSection({
+    at: sectBase + sectSize,
+    sectname: '__data',
+    secSegname: segname,            // deliberately inside __TEXT
+    addr: base + BigInt(dataOffset),
+    size: data.length,
+    offset: dataOffset,
+    align: 2,
+    flags: dataFlags,
+  });
+
+  // __bss: zero-fill — an address range with no bytes behind it.
   //
   // `offset` is 0 and `size` is non-zero, which is exactly what a linker records
   // for a section the loader fills with zeros. `addr` continues past the end of
@@ -242,15 +349,17 @@ function thinMachO({ cputype, text, data, dataFlags = S_REGULAR, symbols, textFl
   // Anything that maps a vaddr without asking whether the section has bytes will
   // claim the header belongs here.
   if (zerofill) {
-    s = seg + 72 + 80 * 2;
-    buf.write(zerofill.sectname, s, 'latin1');
-    buf.write(zerofill.segname ?? segname, s + 16, 'latin1');
-    buf.writeBigUInt64LE(zerofill.addr, s + 32);
-    buf.writeBigUInt64LE(BigInt(zerofill.size), s + 40);
-    buf.writeUInt32LE(0, s + 48);                       // offset: no bytes
-    buf.writeUInt32LE(8, s + 52);                       // align
-    // S_ZEROFILL (0x1) with no S_ATTR_*_INSTRUCTIONS, so a typed scan skips it.
-    buf.writeUInt32LE(0x1, s + 64);
+    writeSection({
+      at: sectBase + sectSize * 2,
+      sectname: zerofill.sectname,
+      secSegname: zerofill.segname ?? segname,
+      addr: zerofill.addr,
+      size: zerofill.size,
+      offset: 0,                    // no bytes
+      align: 8,
+      // S_ZEROFILL (0x1) with no S_ATTR_*_INSTRUCTIONS, so a typed scan skips it.
+      flags: 0x1,
+    });
   }
 
   // ---- LC_SYMTAB
@@ -261,6 +370,25 @@ function thinMachO({ cputype, text, data, dataFlags = S_REGULAR, symbols, textFl
   buf.writeUInt32LE(symbols.length, o + 12);
   buf.writeUInt32LE(strOffset, o + 16);
   buf.writeUInt32LE(strTable.length, o + 20);
+
+  // ---- LC_UUID
+  //
+  // Optional, and placed *after* LC_SYMTAB rather than before it, because real
+  // linkers emit it in the middle of the command list and a reader that assumed
+  // a fixed order would get this one by luck. The bytes are written raw, without
+  // the dashes, because that is what the file contains — the dashed form is a
+  // presentation choice, and asserting the dashes are added is the test's job,
+  // not the generator's.
+  if (uuid) {
+    o = headerSize + segCmdSize + symtabCmdSize;
+    buf.writeUInt32LE(LC_UUID, o);
+    buf.writeUInt32LE(uuidCmdSize, o + 4);
+    const raw = Buffer.from(uuid.replace(/-/g, ''), 'hex');
+    if (raw.length !== 16) {
+      throw new Error(`uuid must be 16 bytes, got ${raw.length} from "${uuid}"`);
+    }
+    raw.copy(buf, o + 8);
+  }
 
   text.copy(buf, textOffset);
   data.copy(buf, dataOffset);
@@ -345,9 +473,15 @@ function arm64Ret() {
  * exactly checkable by reading the source above rather than by running the tool
  * and believing it.
  */
-function codeFixture(cputype) {
+function codeFixture(cputype, { extraLoadcmds = 0 } = {}) {
   const ARM = cputype === CPU_ARM64;
-  const TEXT = textVaddr(HEADER_PLUS_LOADCMDS);
+  // `extraLoadcmds` shifts where `__text` begins, and with it every encoded
+  // displacement. Adding a load command to a fixture without saying so here is
+  // the exact mistake this parameter exists to make impossible: the bytes are
+  // still a valid `call rel32`, they just point 24 bytes before the function they
+  // name, so `findcall` reports zero and the failure looks like a broken reader
+  // rather than a stale fixture.
+  const TEXT = textVaddr(HEADER_PLUS_LOADCMDS + extraLoadcmds);
   const CALLER_A = TEXT + 0x40n;
   const CALLER_B = TEXT + 0x80n;
   const TARGET = TEXT + 0x100n;
@@ -496,6 +630,143 @@ function zerofillFixture() {
       bssSize: BSS_SIZE,
       headerEnd,
     },
+  };
+}
+
+/**
+ * A 32-bit Mach-O, which is the only thing in this corpus that is not 64-bit.
+ *
+ * It exists because the reader's 32-bit path had three defects that no fixture
+ * could reach, every one of them in the same family — a 32-bit field read at the
+ * 64-bit offset, or at the offset that 32-bit arithmetic would suggest, rather
+ * than at the one the header actually declares:
+ *
+ *   - section entries were not read at all (`if (wide)`), so a 32-bit slice
+ *     reported zero sections and every address lookup in it said "not in a
+ *     section";
+ *   - `nlist` was read as 16 bytes with a 64-bit `n_value`, when the 32-bit form
+ *     is 12 bytes with a 32-bit value. This was the worst of the three: the
+ *     stride was wrong, so *every* symbol was read from the wrong place, and the
+ *     names still looked like names.
+ *   - the section `offset` field was read at 44, which is where `align` lives.
+ *
+ * Two of those are invisible without a 32-bit binary to run them on, and the one
+ * that produced plausible-looking output is precisely the kind of bug a test
+ * suite is for. `findcall` is included because i386 and x86_64 encode a direct
+ * call identically (`e8 rel32`), so the call-site scan should work here unchanged
+ * — a reader that only ever saw 64-bit could have a bug that hides behind that
+ * coincidence, and this is where it would show.
+ *
+ * The addresses are 32-bit (`VMADDR_BASE_32`), so a value that overflowed would
+ * truncate rather than quietly stay large.
+ */
+function bits32Fixture() {
+  const TEXT = textVaddr(HEADER_PLUS_LOADCMDS_32, VMADDR_BASE_32);
+  const CALLER_A = TEXT + 0x40n;
+  const CALLER_B = TEXT + 0x80n;
+  const TARGET = TEXT + 0x100n;
+
+  const text = Buffer.alloc(0x140, 0x90); // padding
+  const put = (vaddr, bytes) => bytes.copy(text, Number(vaddr - TEXT));
+
+  put(CALLER_A, x86Call(CALLER_A, TARGET));
+  put(CALLER_A + 5n, Buffer.from([0xc3]));       // ret
+  put(CALLER_B, x86Jmp(CALLER_B, TARGET));
+  put(TARGET, Buffer.from([0xc3]));
+
+  // Plain data. The 64-bit fixture plants a *pointer* to a literal here for
+  // `mapliteral`; a 32-bit pointer is 4 bytes, and making this fixture exercise
+  // that would mean testing two new things at once. It plants the literal as
+  // bytes instead, which `findliteral` can still find — so the fixture tests the
+  // reader's 32-bit arithmetic rather than the pointer search's width handling.
+  const data = Buffer.from('BITS32LITERAL\0', 'latin1');
+
+  const buf = thinMachO({
+    cputype: CPU_X86_64,          // i386; there is no other 32-bit cpu here
+    bits: 32,
+    base: VMADDR_BASE_32,
+    text,
+    data,
+    symbols: [
+      { name: '__mh_execute_header', type: N_SECT | N_EXT, sect: 1, value: TEXT },
+      { name: 'caller_a', type: N_SECT | N_EXT, sect: 1, value: CALLER_A },
+      { name: 'caller_b', type: N_SECT | N_EXT, sect: 1, value: CALLER_B },
+      { name: 'target_fn', type: N_SECT | N_EXT, sect: 1, value: TARGET },
+      { name: '_malloc', type: N_EXT, sect: 0, value: 0n },
+    ],
+  });
+
+  return {
+    buf,
+    addresses: { text: TEXT, callerA: CALLER_A, callerB: CALLER_B, target: TARGET },
+    // What the reader must report, stated here so the assertion is written
+    // against the header rather than against whatever the reader happens to say.
+    expect: {
+      is64: false,
+      sections: ['__text', '__data'],
+      textAddr: TEXT,
+      textSize: 0x140,
+      dataSize: data.length,
+      segmentName: '__TEXT',
+      loadCommands: ['LC_SEGMENT', 'LC_SYMTAB'],
+      symbolNames: ['__mh_execute_header', 'caller_a', 'caller_b', 'target_fn'],
+    },
+  };
+}
+
+/**
+ * A binary carrying NUL-terminated C strings in a real `__cstring` section.
+ *
+ * Every other fixture in this corpus is code and symbols only — deliberately, so
+ * `--check` can pin exact byte counts — which meant `--strings` had nothing to
+ * find in any of them and could only be exercised against a system binary. That
+ * is how a string reader ends up untested on the machine that runs the tests.
+ *
+ * The strings are placed in the `__data` section and that section is *renamed*
+ * to `__cstring` on the way out, because `thinMachO` writes a fixed two-section
+ * layout that a dozen assertions depend on. Renaming a section changes no offsets,
+ * no addresses and no lengths, so the existing checks are unaffected while
+ * `findStrings` gets a section it can actually scan.
+ *
+ * `@@NOPTR@@` is present on purpose: it is printable and NUL-terminated, so a
+ * reader that forgets to filter on section membership would report a reloc
+ * placeholder as a string. It is in `__noptrdata` semantics here — inside the
+ * cstring section — which is what makes the "only these sections" rule worth
+ * testing rather than assuming.
+ */
+function stringsFixture() {
+  const c = codeFixture(CPU_X86_64);
+  const strings = [
+    'macho-fixture-alpha',
+    'macho-fixture-beta',
+    'a short one',
+    'macho-fixture-gamma-with-a-longer-body-to-exceed-the-default-minimum',
+  ];
+  // Laid out as one NUL-delimited blob, which is what a C string section really
+  // is. Padding included, so the reader has to honour `size` rather than read to
+  // the end of the section and pick up whatever follows.
+  const blob = Buffer.concat([...strings.map((s) => Buffer.concat([Buffer.from(s, 'latin1'), Buffer.from([0])])), Buffer.alloc(7, 0)]);
+  const buf = thinMachO({ cputype: CPU_X86_64, ...c, data: blob });
+
+  // Rename __data -> __cstring in the one section_64 entry that carries it.
+  //
+  // Two offsets, both of which are wrong in a way that looks right: the section
+  // table lives in the *load commands*, not in the section data, so it sits at
+  // 32 + 72 rather than after the text it describes. And the name is at the start
+  // of the 80-byte entry, while `headerPlusLoadcmds + text.length` — the obvious
+  // calculation — lands in the *bytes* of that section. Writing the name over
+  // data silently produced a fixture that looked generated and scanned as
+  // `__data`, which is how this was caught.
+  const SECTION_ENTRY_SIZE = 80;
+  const segCmdHeader = 72;
+  const dataSectEntry = 32 + segCmdHeader + SECTION_ENTRY_SIZE; // second section_64
+  buf.fill(0, dataSectEntry, dataSectEntry + 16);
+  buf.write('__cstring', dataSectEntry, 'latin1');
+
+  return {
+    buf,
+    addresses: { ...c.addresses, stringDataOffset: headerPlusLoadcmds(2) + c.text.length },
+    strings,
   };
 }
 
@@ -676,6 +947,124 @@ async function verify(files) {
     'universal: the target resolves to its own symbol',
   );
 
+  // The 32-bit fixture. Checked here as well as in the suite, and against the
+  // generator's own arithmetic rather than against the reader's output — a
+  // self-check that restates what the reader said would pass with the reader
+  // broken, which is the specific failure mode `verify()` exists to prevent.
+  {
+    const b32 = bits32Fixture();
+    const e = b32.expect;
+    const d = describe(files.bits32);
+    const s = d.slices[0];
+
+    expect(!!s, 'bits32: parses');
+    expect(s.bits === 32, `bits32: is reported as 32-bit (got ${s.bits})`);
+    expect(
+      s.sections.map((x) => x.sectname).join(',') === e.sections.join(','),
+      `bits32: reads both sections (got ${s.sections.map((x) => x.sectname).join(',') || 'none'})`,
+    );
+    // The three defects this fixture exists for, each stated as the value the
+    // header declares:
+    //   - sections parsed at all (the `if (wide)` gate);
+    //   - `nlist` stride, which shows up as every symbol name being wrong;
+    //   - the section `offset` field, which is `align`'s offset if misread.
+    expect(
+      s.sections.find((x) => x.sectname === '__text')?.offset === HEADER_PLUS_LOADCMDS_32,
+      `bits32: __text's file offset is the header size (got ${s.sections.find((x) => x.sectname === '__text')?.offset}, expected ${HEADER_PLUS_LOADCMDS_32})`,
+    );
+    expect(
+      s.sections.find((x) => x.sectname === '__text')?.size === e.textSize,
+      `bits32: __text's size is right (got ${s.sections.find((x) => x.sectname === '__text')?.size}, expected ${e.textSize})`,
+    );
+    expect(
+      s.sections.find((x) => x.sectname === '__data')?.size === e.dataSize,
+      `bits32: __data's size is right (got ${s.sections.find((x) => x.sectname === '__data')?.size}, expected ${e.dataSize})`,
+    );
+    expect(
+      s.textAddr === b32.addresses.text,
+      `bits32: __text's address is the 32-bit base + its file offset (got 0x${s.textAddr?.toString(16)}, expected 0x${b32.addresses.text.toString(16)})`,
+    );
+    expect(
+      s.loadCommands.map((c) => c.name).join(',') === e.loadCommands.join(','),
+      `bits32: names both load commands (got ${s.loadCommands.map((c) => c.name).join(',')})`,
+    );
+    expect(
+      s.segments[0]?.segname === e.segmentName && s.segments[0]?.vmaddr === VMADDR_BASE_32,
+      `bits32: the segment's vmaddr is 32-bit (got ${s.segments[0]?.vmaddr})`,
+    );
+
+    // Symbols: the assertion that the 12-byte stride is right. A reader using
+    // 16 bytes would still produce four `defined` symbols and four plausible
+    // names, so the check is that the *names* are the ones written.
+    const syms = lookupAddress(files.bits32, b32.addresses.target);
+    expect(
+      syms.function === 'target_fn',
+      `bits32: resolves target_fn through a 12-byte nlist (got ${JSON.stringify(syms.function)})`,
+    );
+    expect(
+      syms.function && syms.start === b32.addresses.target,
+      `bits32: the symbol's own address is exact, not truncated (got ${syms.start})`,
+    );
+    // `target_fn` is the last symbol by address, so its successor is legitimately
+    // null. `caller_a` is not: its successor must be `caller_b`, one entry on in
+    // a 12-byte-stride table. A reader walking 16-byte entries would land
+    // somewhere else entirely and the names would stop matching.
+    const ca = lookupAddress(files.bits32, b32.addresses.callerA);
+    expect(
+      ca.function === 'caller_a' && ca.start === b32.addresses.callerA
+        && ca.next === b32.addresses.callerB,
+      `bits32: caller_a's successor is caller_b (got ${ca.function} at ${ca.start}, next ${ca.next})`,
+    );
+    expect(
+      lookupAddress(files.bits32, b32.addresses.callerB).function === 'caller_b',
+      'bits32: resolves caller_b too',
+    );
+
+    // i386 and x86_64 encode a direct call identically, so the scan must work
+    // unchanged. If it does not, the reader is not 32-bit-clean even where the
+    // instruction format agrees.
+    expect(
+      findCalls(files.bits32, b32.addresses.target).count === 2,
+      `bits32: finds both encoded call/jmp sites (got ${findCalls(files.bits32, b32.addresses.target).count})`,
+    );
+    expect(
+      findLiteral(files.bits32, 'BITS32LITERAL').count === 1,
+      'bits32: finds a literal in the 32-bit data section',
+    );
+  }
+
+  // The UUID, and the absence of one.
+  //
+  // `stripped.macho` carries an LC_UUID and every other fixture does not, so both
+  // halves of the contract are checkable from the same corpus: a reader that
+  // always returned a value, or one that returned nothing, fails here.
+  {
+    const withUuid = describe(files.stripped).slices[0];
+    expect(
+      withUuid.uuid === FIXTURE_UUID,
+      `stripped: reads its LC_UUID (got ${withUuid.uuid}, expected ${FIXTURE_UUID})`,
+    );
+    expect(
+      withUuid.loadCommands.some((c) => c.name === 'LC_UUID'),
+      'stripped: the command is named as well as read',
+    );
+    // Position is the part that makes it a real read rather than a coincidence:
+    // the UUID bytes are at offset+8 of *its own* command, which is the last of
+    // three. Reading them from the wrong load command would still be 16 bytes of
+    // something.
+    expect(
+      withUuid.loadCommands.length === 3
+        && withUuid.loadCommands[2].name === 'LC_UUID',
+      `stripped: LC_UUID is the third command (got ${withUuid.loadCommands.map((c) => c.name).join(',')})`,
+    );
+    for (const name of ['populated', 'universal', 'bits32', 'decoy']) {
+      expect(
+        describe(files[name]).slices.every((s) => s.uuid === null),
+        `${name}: has no LC_UUID, so reports none rather than inventing one`,
+      );
+    }
+  }
+
   // The decoy fixture: this is the typed-scan assertion.
   const targetD = decoyFixture().addresses.target;
   const typed = findCalls(files.decoy, targetD);
@@ -831,7 +1220,11 @@ async function verify(files) {
   // Stripped: bytes work, names do not.
   const s = describe(files.stripped);
   expect(s.slices[0].nsyms === 0, 'stripped: carries no symbols');
-  const sc = findCalls(files.stripped, targetD);
+  // Its *own* target address, not another fixture's. `stripped` has an extra load
+  // command, so its code sits 24 bytes later than the fixture it was copied from;
+  // reusing the other's address here tested nothing but that the two disagreed.
+  const strippedCode = codeFixture(CPU_X86_64, { extraLoadcmds: 24 });
+  const sc = findCalls(files.stripped, strippedCode.addresses.target);
   expect(sc.count >= 1, 'stripped: findcall still works without symbols');
 
   // Populated: the shape the corpus used to borrow from whatever the machine had
@@ -945,9 +1338,14 @@ export async function buildFixtures({ out = OUT, check = false } = {}) {
   const x86 = codeFixture(CPU_X86_64);
   const arm = codeFixture(CPU_ARM64);
   const decoy = decoyFixture();
+  // `stripped` gains an LC_UUID, so its code is laid out 24 bytes later than the
+  // shared x86 fixture's — see `codeFixture`'s `extraLoadcmds`.
+  const strippedCode = codeFixture(CPU_X86_64, { extraLoadcmds: 24 });
   const populated = populatedFixture();
   const zf = zerofillFixture();
   const zfAddrs = zf.addresses;
+  const st = stringsFixture();
+  const b32 = bits32Fixture();
 
   const BUILT = {
     'universal.macho': universal(),
@@ -955,9 +1353,21 @@ export async function buildFixtures({ out = OUT, check = false } = {}) {
     'thin-arm64.macho': thinMachO({ cputype: CPU_ARM64, ...arm }),
     'arm64-only.macho': thinMachO({ cputype: CPU_ARM64, text: arm.text, data: arm.data, symbols: arm.symbols }),
     'decoy.macho': thinMachO({ cputype: CPU_X86_64, text: decoy.text, data: decoy.data, symbols: decoy.symbols, textFlags: decoy.textFlags }),
-    'stripped.macho': thinMachO({ cputype: CPU_X86_64, text: x86.text, data: x86.data, symbols: [] }),
+    // The one fixture carrying an LC_UUID, so the reader's UUID path has something
+    // to read. It is here because this fixture's assertions are about a binary with
+    // *no symbols*, and adding a load command shifts every offset after the header
+    // — which is exactly the kind of change that silently invalidates a hardcoded
+    // hex constant in someone else's test. `stripped` has none.
+    'stripped.macho': thinMachO({
+      cputype: CPU_X86_64,
+      ...strippedCode,
+      symbols: [],
+      uuid: FIXTURE_UUID,
+    }),
     'populated.macho': thinMachO({ cputype: CPU_X86_64, text: populated.text, data: populated.data, symbols: populated.symbols }),
     'zerofill.macho': zf.buf,
+    'strings.macho': st.buf,
+    'bits32.macho': b32.buf,
   };
 
 // Addresses are written alongside the binaries, because the suite's assertions
@@ -973,6 +1383,9 @@ export async function buildFixtures({ out = OUT, check = false } = {}) {
     stripped: BUILT['stripped.macho'].length,
     populated: BUILT['populated.macho'].length,
     zerofill: BUILT['zerofill.macho'].length,
+    strings: BUILT['strings.macho'].length,
+    bits32: BUILT['bits32.macho'].length,
+    fixtureUuid: FIXTURE_UUID,
     x86_64: { ...Object.fromEntries(Object.entries(x86.addresses).map(([k, v]) => [k, `0x${v.toString(16)}`])) },
     arm64: { ...Object.fromEntries(Object.entries(arm.addresses).map(([k, v]) => [k, `0x${v.toString(16)}`])) },
     decoyAddrs: { ...Object.fromEntries(Object.entries(decoy.addresses).map(([k, v]) => [k, `0x${v.toString(16)}`])) },
@@ -983,6 +1396,25 @@ export async function buildFixtures({ out = OUT, check = false } = {}) {
       bss: `0x${zfAddrs.bss.toString(16)}`,
       bssSize: zfAddrs.bssSize,
       headerEnd: zfAddrs.headerEnd,
+    },
+    // The expected `--strings` output, so the assertion reads the generator's
+    // intent rather than a copy of what the reader happened to return. A test
+    // that restates its own subject's output proves only that it is
+    // deterministic; this proves it is right.
+    stringsExpected: {
+      all: st.strings,
+      longOnly: st.strings.filter((s) => s.length > 20),
+      dataOffset: st.addresses.stringDataOffset,
+    },
+    // The 32-bit fixture's expectations, from the generator's own arithmetic. Its
+    // addresses must fit in 32 bits — asserted here as well as in the suite,
+    // because an address that has silently stopped fitting is the failure mode
+    // this whole fixture exists to prevent, and it is invisible in a hex dump.
+    bits32Expected: {
+      ...b32.expect,
+      textAddr: `0x${b32.addresses.text.toString(16)}`,
+      target: `0x${b32.addresses.target.toString(16)}`,
+      addressFitsIn32Bits: [...Object.values(b32.addresses)].every((v) => v <= 0xffffffffn),
     },
     populatedAddrs: {
       bulk: POPULATED_FILLERS,

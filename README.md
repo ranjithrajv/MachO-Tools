@@ -13,10 +13,13 @@ depth. It does not disassemble, and it will not grow to.
 
 ```sh
 node src/describe.mjs /usr/local/go/bin/go       # what is in this file?
+node src/describe.mjs --sections /usr/local/go/bin/go   # every section, and which are code
+node src/describe.mjs --loads /usr/local/go/bin/go      # every load command, by name
 node src/sym.mjs 'runtime.main' /usr/local/go/bin/go
 node src/symlookup.mjs 0x100085c30 -b /usr/local/go/bin/go
 node src/findcall.mjs --list /usr/local/go/bin/go 20
 node src/findliteral.mjs LZ4 "/Applications/Some App.app"
+node src/findliteral.mjs --strings --filter=error /usr/local/go/bin/go
 node src/a2o.mjs 0x100085c30 -b /usr/local/go/bin/go
 node src/o2a.mjs 0x85c30 -b /usr/local/go/bin/go
 node src/findcall.mjs --json 0x100085c30 /usr/local/go/bin/go | jq '.count'
@@ -28,11 +31,11 @@ No dependencies, no build step, no install, no network. Node ≥ 22.15.
 
 | | |
 |---|---|
-| `describe.mjs` | What is in this file? Every slice, its architecture, extent, symbol counts, where `__TEXT` starts |
+| `describe.mjs` | What is in this file? Every slice, architecture, extent, symbol counts, where `__TEXT` starts, the build's **UUID** — and with `--sections`, `--segments` or `--loads`, every section, segment and load command by name |
 | `sym.mjs` | Search a symbol table by substring, or by regex with `--regex`. Imports marked rather than shown as `0x0` |
 | `symlookup.mjs` | Which function contains this vaddr? Reads symbols directly, because `nm` on a large universal binary is unusable |
 | `findcall.mjs` | Direct `call`/`jmp` xrefs to an address — or `--list` for the distinct targets a binary calls |
-| `findliteral.mjs` | Find a byte literal anywhere in a file, per slice, with context |
+| `findliteral.mjs` | Find a byte literal anywhere in a file, per slice, with context — or `--strings` to list what the binary already contains |
 | `mapliteral.mjs` | Map a literal to vaddrs, then find the pointers to them — which is how you find the code that handles a format |
 | `a2o.mjs` | Which byte of the file is this vaddr? Both the slice-relative and the absolute offset, and zero-fill as its own answer |
 | `o2a.mjs` | Which vaddr does this file offset have? Every slice's answer, since one offset means a different address in each |
@@ -73,9 +76,27 @@ address by *looking* like one turns a typo into a confident wrong answer.
 |---|---|
 | `--json` | Emit one JSON object on stdout; diagnostics go to stderr |
 | `-b`, `--binary <path>` | The binary, for tools where every positional is a query |
-| `--arch=<name>` | Restrict to one architecture. A preference, not a requirement |
+| `--arch=<name>` | Restrict to one architecture. A preference, not a requirement: if the slice is absent another is read, and the note says which |
+| `--sections`, `--segments`, `--loads` | `describe`: list sections, segments, or load commands by name |
+| `--strings`, `--min`, `--filter` | `findliteral`: list the strings already in the binary instead of searching for one |
 | `--include-data` | `findcall`: widen the scan from code sections to every section |
 | `-h`, `--help` | Print usage |
+
+**An unrecognised flag is a usage error**, exit 2, with a suggestion when the
+name is a near miss:
+
+```sh
+$ node src/sym.mjs --regexx 'runtime\.main' /path/to/binary
+unknown flag: --regexx
+
+  did you mean --regex?
+```
+
+This is not cosmetic. It used to be the other way round on every tool but
+`describe`: `parseArgs` dropped anything it did not recognise, so a typo'd
+`--regex` silently became a substring search and answered a *different question*
+with exit 1 — "found nothing" — which is a confident wrong answer wearing a
+successful exit status.
 
 `a2o` and `o2a` take only addresses or offsets as positionals, so their binary
 comes from `-b` like `symlookup`'s does.
@@ -248,19 +269,27 @@ question it was never built for is not.
   nothing rather than guess; `findcall` and `findliteral` read bytes rather than
   names and are unaffected. There is no dSYM support, so a shipped build with
   its symbols in a sidecar is out of reach.
-- **Not a general Mach-O parser.** No load-command dump, no code signing, no
-  fixups, no export trie, no ObjC/Swift metadata, no FAT32.
+- **Not a general Mach-O parser.** `describe --loads` names every load command but
+  interprets none of them: no code signing, no fixups, no export trie, no
+  ObjC/Swift metadata, no FAT32, and no following a `LC_LOAD_DYLIB` to the library
+  it names.
 - **Verified on macOS and Linux.** The reader is portable buffer arithmetic; on
   Windows only the generated half of the suite runs.
 
 ## Scripting it
 
 Every tool takes `--json`, with two guarantees so a consumer does not have to
-learn six dialects: **stdout is JSON only** (progress lines, per-slice narration
+learn one dialect: **stdout is JSON only** (progress lines, per-slice narration
 and "none found" prose all go to stderr), and **one envelope, always** —
 `{ tool, ok, binary, errors, messages?, notes?, data }`, where `errors` holds
-machine-readable reason codes (`no-call-sites`, `no-symbols`, `unknown-encoding`,
-`io`) rather than prose.
+machine-readable reason codes (`bad-arguments`, `bad-address`, `bad-pattern`,
+`no-match`, `no-call-sites`, `no-symbols`, `unknown-encoding`, `io`) rather than
+prose.
+
+`io` and `unknown-encoding` are deliberately distinct, because the two are
+different problems: one is a file that cannot be read, the other a file that
+reads fine and is not a Mach-O. Told "not a Mach-O binary" about a path that
+does not exist, a caller goes looking for the wrong file entirely.
 
 Addresses are emitted as `"0x..."` strings, never JSON numbers: a 64-bit vaddr
 does not survive a `Number`, and a silent precision loss would be
@@ -340,7 +369,7 @@ different, uninstalled package.
 
 | Export | Returns |
 |---|---|
-| `describe(path)` | Every slice: architecture, extent, symbol counts, `__TEXT` bounds |
+| `describe(path)` | Every slice: architecture, extent, symbol counts, `__TEXT` bounds, **`uuid`**, and the full `segments` / `sections` / `loadCommands` lists |
 | `searchSymbols(path, pattern, opts)` | Symbol search. `mode: 'substring'` (default) or `'regex'`; `definedOnly` and `dedupe` default true |
 | `lookupAddress(path, vaddr, opts)` | The function containing an address |
 | `findCalls(path, vaddr, opts)` | Direct call/jmp sites targeting an address |

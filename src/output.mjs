@@ -65,6 +65,72 @@ export const TOOLS = [
  */
 export const VALUE_FLAGS = new Set(['b', 'binary', 'arch', 'max', 'include']);
 
+/**
+ * Flags every tool accepts, whatever else it does.
+ *
+ * `-h`/`--help` is here so it can never be reported as unknown, and `-b`/`--binary`
+ * so a binary can always be named the documented way. A tool passes its own set
+ * alongside these to `rejectUnknownFlags`.
+ */
+export const COMMON_FLAGS = new Set(['h', 'help', 'b', 'binary']);
+
+/**
+ * Fail on a flag this tool does not accept, rather than ignoring it.
+ *
+ * The alternative was the bug this replaces: `sym --regexx <pattern>` silently
+ * downgraded to a substring search and answered a *different question*, exiting
+ * 1 — "found nothing" — so a typo produced a confident wrong answer instead of an
+ * error. `describe` rejected unknown flags while `sym`, `symlookup` and
+ * `findliteral` accepted anything, which is the worst of both: the same
+ * misspelling failed on one tool and was ignored on three.
+ *
+ * The MCP layer rejected unknown arguments from the start; this is that rule
+ * applied to the CLIs, so both surfaces now agree. `--` still ends flag parsing
+ * and a lone `-` stays positional, so nothing legitimate is caught by it.
+ *
+ * @param {Set<string>} known       flags this tool accepts
+ * @param {Set<string>} used        flags actually given
+ * @param {string[]}   usageLines   printed above the error
+ */
+export function rejectUnknownFlags(known, used, usageLines) {
+  const unknown = [...used].filter((f) => !known.has(f) && !COMMON_FLAGS.has(f));
+  if (!unknown.length) return;
+  const [long] = unknown;
+  // The near-miss suggestion is the point of doing this by hand: the commonest
+  // cause is a typo, and "did you mean" turns a failed command into a corrected
+  // one. Levenshtein rather than a library, because the alternative is a
+  // dependency in a package whose identity is having none.
+  let hint = '';
+  let best = null;
+  for (const k of new Set([...known, ...COMMON_FLAGS])) {
+    if (k === long) continue;
+    const d = distance(long, k);
+    if (d <= Math.max(1, Math.floor(long.length / 3)) && (!best || d < best.d)) best = { k, d };
+  }
+  if (best) hint = `\n\n  did you mean --${best.k}?`;
+  usage([
+    ...usageLines,
+    '',
+    `unknown flag: --${long}${hint}`,
+    ...(unknown.length > 1 ? [`also unrecognised: ${unknown.slice(1).map((f) => `--${f}`).join(', ')}`] : []),
+  ]);
+}
+
+/** Plain Levenshtein, no early exit. Inputs are a handful of characters. */
+function distance(a, b) {
+  const prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let diag = prev[0];
+    prev[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = prev[j];
+      prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, diag + (a[i - 1] === b[j - 1] ? 0 : 1));
+      diag = tmp;
+    }
+  }
+  return prev[b.length];
+}
+
 export function parseArgs(argv) {
   const flags = new Set();
   const opts = {};

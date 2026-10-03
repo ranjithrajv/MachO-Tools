@@ -34,7 +34,7 @@
  */
 import { requireBinary } from './target.mjs';
 import { lookupAddress } from './api.mjs';
-import { parseArgs, emitJSON, usage, EXIT } from './output.mjs';
+import { parseArgs, emitJSON, usage, EXIT, rejectUnknownFlags } from './output.mjs';
 
 const { flags, positional, opts } = parseArgs(process.argv.slice(2));
 
@@ -55,6 +55,8 @@ if (flags.has('help') || flags.has('h')) {
   process.stdout.write(HELP.join('\n') + '\n');
   process.exit(EXIT.ok);
 }
+
+rejectUnknownFlags(new Set(['arch', 'json']), flags, HELP);
 
 if (positional.length === 0) usage(HELP);
 

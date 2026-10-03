@@ -61,7 +61,7 @@
  */
 import { requireBinary } from './target.mjs';
 import { findCalls, listCallTargets } from './api.mjs';
-import { parseArgs, emitJSON, usage, EXIT } from './output.mjs';
+import { parseArgs, emitJSON, usage, EXIT, rejectUnknownFlags } from './output.mjs';
 
 const { flags, opts, positional } = parseArgs(process.argv.slice(2));
 
@@ -86,6 +86,8 @@ if (flags.has('help') || flags.has('h')) {
   process.stdout.write(HELP.join('\n') + '\n');
   process.exit(EXIT.ok);
 }
+
+rejectUnknownFlags(new Set(['list', 'include-data', 'arch', 'json']), flags, HELP);
 
 const listMode = flags.has('list');
 const json = flags.has('json');

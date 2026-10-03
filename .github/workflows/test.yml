@@ -12,7 +12,8 @@
 #   fixtures  — build the corpus and confirm the checked-in binaries match what
 #               the generator produces. A stale or hand-edited fixture is a test
 #               that no longer tests, and it would otherwise go unnoticed.
-#   test      — the suite, on macOS, Linux and Windows.
+#   test      — the reader suite, on macOS, Linux and Windows.
+#   protocol  — the MCP server and the agent skill, on Linux.
 #   mutation  — prove the suite fails when the reader is broken. Slow, and the
 #               job most likely to rot, so it runs on its own rather than
 #               blocking every push's test job.
@@ -68,6 +69,34 @@ jobs:
         run: node test/fixtures.mjs
       - name: Run the suite
         run: node test/smoke.mjs
+
+  # The MCP server and the skill are separate suites because they check
+  # different things and neither is a subset of `smoke.mjs`.
+  #
+  # `mcp.mjs` spawns subprocesses and parses every byte they write, so it is slow
+  # and it is the one place a stray `console.log` would be caught rather than
+  # shipped. `skill.mjs` holds prose to the tree, which is the check that stops a
+  # documented flag from quietly becoming a no-op.
+  #
+  # Linux only, and deliberately: both spawn Node subprocesses and neither reads
+  # a platform-specific system binary for its assertions — the string fixture
+  # exists so they do not need one. Running them on one platform is enough to catch
+  # the failure they exist for, and three platforms of them would slow every push
+  # for coverage they would not add.
+  protocol:
+    name: mcp protocol and agent skill
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - name: Build the fixture corpus
+        run: node test/fixtures.mjs
+      - name: The MCP server over a real pipe
+        run: node test/mcp.mjs
+      - name: The agent skill matches the tools
+        run: node test/skill.mjs
 
   mutation:
     name: mutation

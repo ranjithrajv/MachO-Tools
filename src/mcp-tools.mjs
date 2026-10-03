@@ -331,8 +331,24 @@ function lines(tool, env) {
       for (const s of d.slices) {
         L.push(
           `  ${s.arch.padEnd(7)} ${s.readable ? `${n(s.defined)} defined / ${n(s.nsyms)} symbols` : `unreadable — ${s.note}`}` +
-            `  ${s.codeSections} code section(s)  __text ${hex(s.textAddr)}+${n(s.textSize)}`,
+            `  ${s.codeSections} of ${s.sections.length} sections are code  __text ${hex(s.textAddr)}+${n(s.textSize)}`,
         );
+        // Segments and sections are the two things a caller most often wants next
+        // and cannot get from any other tool here, so they lead the text block
+        // rather than sitting only in structuredContent.
+        for (const g of s.segments) {
+          L.push(`      seg ${g.segname.padEnd(16)} vm ${hex(g.vmaddr)}..${hex(g.vmaddr + g.vmsize)}  file ${g.fileoff}..${g.fileoff + g.filesize}`);
+        }
+        for (const sec of s.sections) {
+          L.push(`        ${(sec.segname + ',' + sec.sectname).padEnd(32)} ${hex(sec.addr)}..${hex(sec.addr + BigInt(sec.size))}  ${n(sec.size)} bytes${sec.flags & 0x80000000 ? '  code' : ''}`);
+        }
+        if (s.loadCommands?.length) {
+          L.push(`      ${s.loadCommands.length} load command(s): ${[...new Set(s.loadCommands.map((c) => c.name))].join(', ')}`);
+        }
+        // The UUID, because the line above already says `LC_UUID` and a reader
+        // who sees the command named but no value will reasonably conclude the
+        // binary carries none. Naming a command is not reading it.
+        if (s.uuid) L.push(`      uuid ${s.uuid}`);
       }
       if (d.slices.every((s) => s.readable && s.defined === 0)) {
         L.push('No symbols in any slice (stripped, or a dyld-cache stub). macho-findcall and macho-findliteral still work — they read bytes, not names.');
@@ -378,6 +394,12 @@ function lines(tool, env) {
       break;
 
     case 'macho-findliteral':
+      if (d.strings) {
+        L.push(`${n(d.count)} string(s) of ${d.min}+ bytes in ${d.sections.join(', ')}  [${n(d.scanned)} bytes scanned]`);
+        for (const s of d.strings.slice(0, 25)) L.push(`  ${hex(s.vaddr)}  ${s.section.padEnd(28)} ${JSON.stringify(s.text.slice(0, 90))}`);
+        if (d.strings.length > 25) L.push(`  ...and ${n(d.strings.length - 25)} more, all in structuredContent`);
+        break;
+      }
       L.push(`${n(d.count)} occurrence(s) of ${JSON.stringify(d.literal)} (hex ${d.hex}) in ${n(d.scanned)} bytes across ${d.slices.length} slice(s)`);
       for (const h of d.hits.slice(0, 20)) {
         L.push(`  file ${h.off}  ${hex(h.vaddr)}  ${h.section}${h.inText ? '' : '  (outside __TEXT)'}`);
@@ -469,17 +491,31 @@ export const TOOLS = [
     title: 'Describe a Mach-O binary',
     description:
       'Every slice: architecture, file extent, whether it is thin or universal, symbol counts, where __TEXT starts, ' +
-      'and how many sections are flagged as instructions. Call this FIRST on any binary — it tells you which slices the ' +
-      'other tools will read and whether there are any symbol names to search at all.\n\n' +
-      'Does not parse load commands, code signature, Objective-C or Swift metadata.',
-    inputSchema: obj({ binary: BINARY }, ['binary']),
+      'every segment, every section and every load command. Call this FIRST on any binary — it tells you which slices ' +
+      'the other tools will read and whether there are any symbol names to search at all.\n\n' +
+      'Pass arch to narrow a universal binary to one slice; the file is still reported as universal, and if the named ' +
+      'architecture is absent every slice is shown with a note saying so.\n\n' +
+      'Names load commands but does not interpret them, and does not parse code signature, Objective-C or Swift metadata.',
+    inputSchema: obj({ binary: BINARY, arch: ARCH }, ['binary']),
     outputSchema: ENVELOPE,
     async run(args) {
       const b = binaryOf(args);
       if (b.error) throw Object.assign(new Error(b.error.messages[0]), { code: 'bad-arguments' });
       return guard('macho-describe', b.binary, async () => {
         const { describe } = await import('./api.mjs');
-        return { data: describe(b.binary) };
+        let data = describe(b.binary);
+        const notes = [];
+        if (args.arch && data.slices.length > 1) {
+          const all = data.slices.map((s) => s.arch);
+          const match = data.slices.find((s) => s.arch === args.arch);
+          if (!match) {
+            notes.push(`--arch=${args.arch} matched none of the slices (${all.join(', ')}); showing all`);
+          } else {
+            data = { ...data, slices: [match] };
+            notes.push(`arch=${args.arch}: showing 1 of ${all.length} slices — drop the flag for all`);
+          }
+        }
+        return { data, notes };
       });
     },
   },
@@ -627,39 +663,89 @@ export const TOOLS = [
 
   {
     name: 'macho-findliteral',
-    title: 'Find a byte literal anywhere in a file',
+    title: 'Find a byte literal, or list the strings already in a file',
     description:
-      'Search for a literal byte sequence anywhere in the binary — inside code, inside data, in any slice — and report ' +
-      'each occurrence with its file offset, its virtual address, and surrounding bytes for context.\n\n' +
-      'Matched as raw latin1 bytes, so escapes work: "\\x1f\\x8b" for a gzip header. This is a byte search, not a strings ' +
-      'dump: it finds a magic inside code as readily as one in __DATA, and it does not stop at NUL.\n\n' +
-      'A value assembled at runtime from parts never appears as a contiguous literal, so an empty result is common and ' +
-      'means only that.',
+      'Two modes. With `literal`: search for a byte sequence anywhere in the binary — inside code, inside data, in any ' +
+      'slice — and report each occurrence with its file offset, its virtual address, and surrounding bytes for context. ' +
+      'With `strings: true`: list the NUL-terminated strings the binary already carries, each with its address and ' +
+      'section.\n\n' +
+      'The byte search is matched as raw latin1, so escapes work: "\\x1f\\x8b" for a gzip header. It is a byte search, ' +
+      'not a strings dump — it finds a magic inside code as readily as one in __DATA, and does not stop at NUL.\n\n' +
+      'The string listing reads __cstring, __objc_methname, __swift5_reflstr and __objc_classname. It finds nothing in ' +
+      'a Go binary, which keeps its strings length-prefixed in __gopclntab rather than NUL-terminated — use `literal` ' +
+      'with a known substring there.\n\n' +
+      'In both modes `arch` narrows a universal binary to one slice. If the named architecture is absent the answer ' +
+      'still comes from one slice, and a note says so rather than reporting silence.',
     inputSchema: obj(
       {
         binary: BINARY,
-        literal: { type: 'string', minLength: 1, description: 'The bytes to find. Latin1 escapes such as \\x1f\\x8b are interpreted.' },
-        text_only: { type: 'boolean', description: 'Restrict to the slice named in $MACHO_TEXT_SLICE, for a single architecture.' },
-        max: { type: 'integer', minimum: 1, description: 'Cap on occurrences returned. Default unlimited.' },
+        literal: {
+          type: 'string',
+          minLength: 1,
+          description: 'The bytes to find, as latin1 with escapes interpreted. Required unless strings is true.',
+        },
+        strings: {
+          type: 'boolean',
+          description: "List the binary's NUL-terminated strings instead of searching for one.",
+        },
+        min: { type: 'integer', minimum: 1, description: 'With strings: shortest string to report. Default 4.' },
+        filter: { type: 'string', minLength: 1, description: 'With strings: only report strings containing this substring.' },
+        text_only: { type: 'boolean', description: 'Restrict the byte search to __TEXT rather than the whole file.' },
+        arch: { ...ARCH, description: `${ARCH.description} Applies to both modes.` },
+        max: { type: 'integer', minimum: 1, description: 'Cap on occurrences or strings returned. Default unlimited.' },
       },
-      ['binary', 'literal'],
+      ['binary'],
     ),
     outputSchema: ENVELOPE,
     async run(args) {
       const b = binaryOf(args);
       if (b.error) throw Object.assign(new Error(b.error.messages[0]), { code: 'bad-arguments' });
+      // `literal` is required for the search and meaningless for the listing, so
+      // the requirement is conditional rather than declared in the schema. A
+      // required field that one mode ignores is a schema that lies about itself.
+      if (!args.strings && !args.literal) {
+        throw Object.assign(
+          new Error('give `literal` to search for a byte sequence, or `strings: true` to list the strings already in the binary.'),
+          { code: 'bad-arguments' },
+        );
+      }
       return guard('macho-findliteral', b.binary, async () => {
-        const { findLiteral } = await import('./api.mjs');
-        const r = findLiteral(b.binary, args.literal, { textOnly: args.text_only === true, max: args.max || 0 });
+        const { findLiteral, findStrings } = await import('./api.mjs');
+        if (args.strings) {
+          const r = findStrings(b.binary, {
+            arch: args.arch,
+            min: args.min || 4,
+            max: args.max || 0,
+            filter: args.filter || null,
+          });
+          return {
+            data: r,
+            errors: [],
+            notes: [
+              r.count === 0
+                ? `no NUL-terminated strings in ${r.sections.join(', ')}. A Go binary keeps its strings length-prefixed in __gopclntab, so a C-string reader legitimately finds none there.`
+                : null,
+              r.truncated ? `truncated to ${r.strings.length} of ${r.count}` : null,
+            ].filter(Boolean),
+          };
+        }
+        const r = findLiteral(b.binary, args.literal, {
+          textOnly: args.text_only === true,
+          arch: args.arch,
+          max: args.max || 0,
+        });
+        // Empty is an answer. See the note on REASON_CODES: `isError` is what
+        // the model reads, and "this literal is not in the file" is the answer
+        // to the question, not a failure to answer it.
         return {
           data: r,
-          // Empty is an answer. See the note on REASON_CODES: `isError` is what
-          // the model reads, and "this literal is not in the file" is the answer
-          // to the question, not a failure to answer it.
           errors: [],
           notes: [
             r.count ? null : 'no contiguous match — a value assembled at runtime from parts never appears as one literal',
             r.truncated ? `truncated to ${r.hits.length} of the occurrences found` : null,
+            r.arch && r.archHonoured === null
+              ? `arch=${r.arch} is not in this binary; read ${r.archRead.join(', ')} instead. The answer is real but is not the slice you asked for.`
+              : null,
           ].filter(Boolean),
         };
       });

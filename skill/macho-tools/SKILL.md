@@ -16,6 +16,45 @@ install: Node ≥ 22.15 and either the CLI or an MCP server.
 format or the bytes. Hand the addresses it produces to a disassembler; do not
 try to make it decode code.
 
+## Reading the file's structure
+
+`macho-describe` is also the only tool here that shows you the map: every
+segment, every section with its address and size, every load command by name,
+and the build's UUID — the one field that says *which* build this is rather than
+what is in it.
+
+```sh
+macho-describe --sections /path/to/binary   # segment,section  addr..end  size  code|data
+macho-describe --segments /path/to/binary   # name  vm range  file range
+macho-describe --loads    /path/to/binary   # LC_SEGMENT_64, LC_LOAD_DYLIB, LC_UUID, ...
+macho-describe --arch=arm64 /path/to/binary # one slice of a universal binary
+```
+
+The `code`/`data` marking is the same signal `macho-findcall` types its scan by,
+so the two can be checked against each other.
+
+Load commands are **named, not interpreted**. Knowing a binary declares
+`LC_LOAD_DYLIB` or `LC_CODE_SIGNATURE` is a fact about it; following the
+dependency or parsing the signature is not something these tools do.
+
+## Listing what a binary already contains
+
+To see its strings without knowing one in advance:
+
+```sh
+macho-findliteral --strings /path/to/binary
+macho-findliteral --strings --min=8 --filter=error /path/to/binary
+```
+
+Each string carries its address and its section, so it can be handed straight to
+`macho-symlookup`. This reads `__cstring`, `__objc_methname`, `__swift5_reflstr`
+and `__objc_classname`.
+
+**It finds nothing in a Go binary.** Go keeps its strings length-prefixed inside
+`__gopclntab`, not NUL-terminated, so there is no terminator to scan for and zero
+is the correct answer. Use `macho-sym` on a Go symbol, or `macho-findliteral`
+with a substring you already know, instead.
+
 ## Three ways in, in order of preference
 
 **1. The MCP server**, if one is configured — the tools are already there and
@@ -62,8 +101,8 @@ end up reading addresses that were never in that slice.
 
 1. **`macho-describe`** first, always. It tells you how many slices there are,
    which architecture each is, whether there is a symbol table to search at all,
-   and where `__TEXT` starts. On a universal binary everything after this needs
-   `--arch` or it silently reads one arbitrary slice.
+   where `__TEXT` starts, and the build's UUID. On a universal binary everything
+   after this needs `--arch` or it silently reads one arbitrary slice.
 2. **`macho-sym`** to turn a name into an address.
 3. **`macho-symlookup`** to turn an address back into a function — the way to
    make sense of an address from a crash log.
@@ -112,8 +151,9 @@ to exist, that is why — it is not a broken install. Use a real binary instead.
 ## What it will not do, so you do not have to try
 
 No disassembly, no decompilation. No indirect or PLT call resolution. No dSYM or
-DWARF. No load-command dump, code signature, entitlements, chained fixups, export
-tries, or Objective-C and Swift metadata. Not ELF, not PE.
+DWARF. No code signature, entitlements, chained fixups, export tries, or
+Objective-C and Swift metadata — `describe --loads` *names* those load commands
+but does not interpret them. Not ELF, not PE.
 
 When you need to know what the code *does* rather than where it is, use Ghidra
 (free, no licence server) or Hopper. That is the intended division: this produces
@@ -129,9 +169,12 @@ the shortlist of addresses worth opening, and hands them over.
   `$MACHO_APP`. `macho-symlookup`, `macho-a2o` and `macho-o2a` take only queries
   as positionals, so their binary must come from `-b` or the environment.
 - `--arch=<x86_64|arm64>` is a preference, not a requirement: if that slice is
-  absent, the richest one is read instead.
-- Unknown flags are **silently ignored** on several tools. If a result looks
-  wrong, check you spelled the flag as documented before doubting the answer.
+  absent, another is read and a note says which. Check the note rather than
+  assuming you got the slice you asked for.
+- **An unknown flag is a usage error, exit 2**, with a suggestion when the name is
+  a near miss. If a tool exits 2 and says "did you mean", the answer is in the
+  message. Nothing here ignores a flag — that used to be the behaviour on several
+  tools and it turned a typo into a confident wrong answer.
 
 ## Verifying it works
 

@@ -35,7 +35,7 @@
  */
 import { requireBinary } from './target.mjs';
 import { mapLiteral } from './api.mjs';
-import { parseArgs, emitJSON, usage, EXIT } from './output.mjs';
+import { parseArgs, emitJSON, usage, EXIT, rejectUnknownFlags } from './output.mjs';
 
 const { flags, opts, positional } = parseArgs(process.argv.slice(2));
 
@@ -55,6 +55,8 @@ if (flags.has('help') || flags.has('h')) {
   process.stdout.write(HELP.join('\n') + '\n');
   process.exit(EXIT.ok);
 }
+
+rejectUnknownFlags(new Set(['json']), flags, HELP);
 
 const literal = positional[0];
 if (!literal) usage(HELP);

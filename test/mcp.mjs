@@ -620,87 +620,307 @@ console.log('\nmcp: the protocol\n');
     }
   }
 
+  // The fixture carrying NUL-terminated strings, for the `--strings` mode. Taken
+  // from the corpus rather than a system binary so the assertion is exact and
+  // reproducible; the generated fixtures are otherwise code-and-symbols only,
+  // which is why this one exists.
+  const stringsBin = fs.existsSync(path.join(FIXTURES, 'strings.macho'))
+    ? path.join(FIXTURES, 'strings.macho')
+    : null;
+
+  // One entry per *mode*, not per tool. A second mode that nothing exercises is a
+  // mode that exists only until someone calls it, and `--strings` and
+  // `list_targets` both arrived without one.
   const probes = {
-    'macho-describe': { binary: universal },
-    'macho-sym': { binary: populated, pattern: 'pop' },
-    'macho-symlookup': { binary: populated, addresses: ['0x100000120'] },
-    'macho-findcall': { binary: populated, target: '0x100000220' },
-    'macho-findliteral': realLiteral ? { binary: REAL, literal: realLiteral } : null,
-    'macho-mapliteral': realMapLiteral ? { binary: REAL, literal: realMapLiteral } : null,
-    'macho-a2o': realAddr ? { binary: REAL, addresses: [realAddr] } : null,
-    'macho-o2a': realOffset !== null ? { binary: REAL, offsets: [realOffset] } : null,
+    'macho-describe': [
+      { binary: universal },
+      { binary: universal, arch: 'arm64' },
+    ],
+    'macho-sym': [{ binary: populated, pattern: 'pop' }],
+    'macho-symlookup': [{ binary: populated, addresses: ['0x100000120'] }],
+    'macho-findcall': [
+      { binary: populated, target: '0x100000220' },
+      { binary: populated, list_targets: true },
+    ],
+    'macho-findliteral': [
+      ...(realLiteral ? [{ binary: REAL, literal: realLiteral }] : []),
+      ...(stringsBin ? [{ binary: stringsBin, strings: true }] : []),
+    ],
+    'macho-mapliteral': realMapLiteral ? [{ binary: REAL, literal: realMapLiteral }] : [],
+    'macho-a2o': realAddr ? [{ binary: REAL, addresses: [realAddr] }] : [],
+    'macho-o2a': realOffset !== null ? [{ binary: REAL, offsets: [realOffset] }] : [],
+  };
+
+  const SKIP_WHY = {
+    'macho-o2a': 'no Mach-O with a mappable address was available',
+    'macho-a2o': 'no Mach-O with a mappable address was available',
+    'macho-mapliteral': 'no Mach-O with a known literal was available (looked at /usr/local/go/bin/go, /bin/ls, /usr/bin/ls)',
+    'macho-findliteral': 'no Mach-O with a known literal, and no strings fixture (looked at /usr/local/go/bin/go, /bin/ls, /usr/bin/ls)',
   };
 
   for (const d of defs) {
-    const probeArgs = probes[d.name];
-    if (!probeArgs) {
+    const modes = probes[d.name] ?? [];
+    if (!modes.length) {
       // The reason differs per tool — a missing literal, a missing __text — so it is
       // stated rather than left as one generic sentence that would be wrong for
       // whichever tool happened to skip.
-      skip(
-        `${d.name}: runs against a real binary`,
-        d.name === 'macho-o2a'
-          ? 'no Mach-O with a mappable address was available'
-          : 'no Mach-O with a known literal was available (looked at /usr/local/go/bin/go, /bin/ls, /usr/bin/ls)',
-      );
+      skip(`${d.name}: runs against a real binary`, SKIP_WHY[d.name] || 'no suitable input was available');
       continue;
     }
-    const out = await callTool(d.name, probeArgs);
+    for (const [i, probeArgs] of modes.entries()) {
+      const label = modes.length > 1 ? `${d.name} [mode ${i + 1}]` : d.name;
+      const out = await callTool(d.name, probeArgs);
+      check(
+        out && out.envelope && out.envelope.tool === d.name && typeof out.text === 'string' && out.text.length > 0,
+        `${label}: runs against a real binary and produces a result`,
+        JSON.stringify(out?.envelope?.errors),
+      );
+      check(
+        out?.envelope?.ok === true,
+        `${label}: finds what is actually there (errors=${JSON.stringify(out?.envelope?.errors)})`,
+      );
+      check(
+        out?.envelope?.data !== null && out?.envelope?.data !== undefined,
+        `${label}: returns data`,
+      );
+      check(
+        !/\bundefined\b|\[object Object\]|NaN/.test(out?.text || ''),
+        `${label}: its text block reads as prose, with no undefined leaking through`,
+        (out?.text || '').split('\n').find((l) => /undefined|\[object Object\]|NaN/.test(l)),
+      );
+      check(
+        (out?.envelope?.errors || []).every((c) => REASON_CODES.includes(c)),
+        `${label}: emits only documented reason codes`,
+        JSON.stringify(out?.envelope?.errors),
+      );
+      // Only the *address* fields. `off`, `offset` and `absoluteOffset` are file
+      // positions, which are small integers by nature and are correctly JSON
+      // numbers — and a check that flagged them would have pushed someone to
+      // hex-string a byte count, which is not what this rule is for.
+      check(
+        !/"(?:vaddr|addr|dest|target|start|next|textAddr)":\s*\d/.test(json(out?.envelope?.data)),
+        `${label}: no address is serialised as a JSON number`,
+        json(out?.envelope?.data)?.slice(0, 200),
+      );
+    }
+    void 0;
+  }
+
+  // The `--strings` mode specifically: an empty result is an answer, so the
+  // interesting checks are that it found the fixture's four strings and that its
+  // addresses are real, not merely that it did not crash.
+  if (stringsBin) {
+    const out = await callTool('macho-findliteral', { binary: stringsBin, strings: true });
     check(
-      out && out.envelope && out.envelope.tool === d.name && typeof out.text === 'string' && out.text.length > 0,
-      `${d.name}: runs against a real binary and produces a result`,
-      JSON.stringify(out?.envelope?.errors),
+      out?.envelope?.data?.count === 4,
+      'macho-findliteral --strings: reads the four fixture strings',
+      JSON.stringify(out?.envelope?.data?.count),
     );
     check(
-      out?.envelope?.ok === true,
-      `${d.name}: finds what is actually there (errors=${JSON.stringify(out?.envelope?.errors)})`,
+      out?.envelope?.data?.strings?.every((s) => s.section === '__TEXT,__cstring'),
+      'macho-findliteral --strings: names the section each string came from',
     );
     check(
-      out?.envelope?.data !== null && out?.envelope?.data !== undefined,
-      `${d.name}: returns data`,
-    );
-    check(
-      !/\bundefined\b|\[object Object\]|NaN/.test(out?.text || ''),
-      `${d.name}: its text block reads as prose, with no undefined leaking through`,
-      (out?.text || '').split('\n').find((l) => /undefined|\[object Object\]|NaN/.test(l)),
-    );
-    check(
-      (out?.envelope?.errors || []).every((c) => REASON_CODES.includes(c)),
-      `${d.name}: emits only documented reason codes`,
-      JSON.stringify(out?.envelope?.errors),
-    );
-    // Addresses must survive the round trip as strings, which is the one
-    // property that cannot be checked by reading the output by eye.
-    check(
-      !/"(?:vaddr|addr|dest|target|start|next)":\s*\d/.test(json(out?.envelope?.data)),
-      `${d.name}: no address is serialised as a JSON number`,
+      out?.text?.includes('__cstring'),
+      'macho-findliteral --strings: says which sections it searched, in the text block',
     );
   }
 
-  // The generated corpus contains no printable string literals at all, so these
-  // two tools have nothing to find there. That is a useful case to pin: it is
-  // where an empty result is the only correct answer, and where a tool that
-  // reported it as a failure would send a model looking for another binary.
-  for (const t of ['macho-findliteral', 'macho-mapliteral']) {
-    const out = await callTool(t, { binary: populated, literal: 'no-such-literal-anywhere' });
+  // The 32-bit fixture, over the wire.
+  //
+  // The point is not that the protocol works on a 32-bit binary — it is that the
+  // 32-bit sections reach a client at all. Before the reader was fixed, `describe`
+  // reported zero sections for this binary, so a model asking "what sections does
+  // this have" over MCP got an empty list with `ok: true`, which is the hardest
+  // kind of wrong answer to notice.
+  const bits32 = fs.existsSync(path.join(FIXTURES, 'bits32.macho'))
+    ? path.join(FIXTURES, 'bits32.macho')
+    : null;
+  if (!bits32) {
+    skip('the 32-bit binary over MCP', 'the bits32 fixture is missing — run npm run test:fixtures');
+  } else {
+    const { out } = await session([
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'macho-describe', arguments: { binary: bits32 }, _meta: meta() } },
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'macho-symlookup', arguments: { binary: bits32, addresses: ['0x80481f4'] }, _meta: meta() } },
+      { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'macho-findcall', arguments: { binary: bits32, target: '0x80481f4' }, _meta: meta() } },
+    ], { expectLines: 3 });
+    const { msgs } = parseStream(out);
+    const d32 = byId(msgs, 1)?.result?.structuredContent?.data;
+    const s32 = d32?.slices?.[0];
+
     check(
-      out?.envelope?.ok === true && out?.envelope?.errors?.length === 0,
-      `${t}: a literal absent from the corpus answers empty rather than failing`,
-      JSON.stringify(out?.envelope?.errors),
+      s32?.bits === 32,
+      'over MCP: a 32-bit slice is reported as 32-bit',
+      `bits=${s32?.bits}`,
     );
     check(
-      out?.isError === false,
-      `${t}: and is not flagged as an error to the client`,
+      s32?.sections?.length === 2
+        && s32.sections.find((x) => x.sectname === '__text')?.offset === 244,
+      'over MCP: its sections reach the client with the right file offsets',
+      JSON.stringify(s32?.sections?.map((x) => `${x.sectname}@${x.offset}`)),
     );
     check(
-      out?.envelope?.notes?.length > 0,
-      `${t}: but does say in a note that nothing was found`,
-      JSON.stringify(out?.envelope?.notes),
+      s32?.sections?.every((x) => typeof x.addr === 'string' && x.addr.startsWith('0x')),
+      'over MCP: 32-bit addresses are strings, as everywhere else',
+    );
+    check(
+      /LC_SEGMENT\b/.test(byId(msgs, 1)?.result?.content?.[0]?.text || ''),
+      'over MCP: the text block names the non-_64 load command, so it is legible without parsing JSON',
+      (byId(msgs, 1)?.result?.content?.[0]?.text || '').split('\n').slice(0, 6).join(' | '),
+    );
+    const q32 = byId(msgs, 2)?.result?.structuredContent?.data?.queries?.[0];
+    check(
+      q32?.function === 'target_fn' && q32?.start === '0x80481f4',
+      'over MCP: symlookup resolves a symbol through a 12-byte nlist',
+      `function=${q32?.function} start=${q32?.start}`,
+    );
+    check(
+      byId(msgs, 3)?.result?.structuredContent?.data?.count === 2,
+      'over MCP: findcall finds both 32-bit call/jmp sites',
+      JSON.stringify(byId(msgs, 3)?.result?.structuredContent?.data?.count),
     );
   }
 }
 
-/* ---- 10. the stdout guard is real ----------------------------------- */
+// The UUID, over the wire.
+//
+// Same reason as the 32-bit block above: the protocol is not what is under test,
+// the *field reaching the client* is. A `describe` that listed LC_UUID by name
+// while reporting no UUID would let a model conclude the binary is unsigned or
+// un-identifiered, which is a claim about the build and not about the file.
+{
+  const stripped = fs.existsSync(path.join(FIXTURES, 'stripped.macho'))
+    ? path.join(FIXTURES, 'stripped.macho')
+    : null;
+  if (!stripped) {
+    skip('the UUID over MCP', 'the stripped fixture is missing — run npm run test:fixtures');
+  } else {
+    const WANT = 'a1b2c3d4-e5f6-4708-9a0b-1c2d3e4f5061';
+    const { out } = await session([
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'macho-describe', arguments: { binary: stripped }, _meta: meta() } },
+    ], { expectLines: 1 });
+    const { msgs } = parseStream(out);
+    const r1 = byId(msgs, 1)?.result;
+
+    check(
+      r1?.structuredContent?.data?.slices?.[0]?.uuid === WANT,
+      'over MCP: the UUID reaches the client in structuredContent',
+      JSON.stringify(r1?.structuredContent?.data?.slices?.[0]?.uuid),
+    );
+    check(
+      (r1?.content?.[0]?.text || '').includes(WANT),
+      'over MCP: and in the text block, so it is legible without parsing JSON',
+      (r1?.content?.[0]?.text || '').split('\n').slice(1, 4).join(' | '),
+    );
+    check(
+      r1?.structuredContent?.ok === true,
+      'over MCP: and it does not turn the envelope into an error',
+    );
+  }
+}
+
+/* ---- 10. an empty result is an answer, not an error ----------------- */
+
+{
+  // The generated corpus carries no printable literals, so these are the only
+  // correct answer there — and it is the case where a tool that reported "not
+  // found" as a failure would send a model looking for a different binary.
+  const { callTool } = await import('../src/mcp-tools.mjs');
+  const corpus = path.join(FIXTURES, 'populated.macho');
+  for (const [tool, args] of [
+    ['macho-findliteral', { binary: corpus, literal: 'no-such-literal-anywhere' }],
+    ['macho-mapliteral', { binary: corpus, literal: 'no-such-literal-anywhere' }],
+    ['macho-sym', { binary: corpus, pattern: 'no-such-symbol-anywhere' }],
+    ['macho-findcall', { binary: corpus, target: '0x7fffffff0000' }],
+  ]) {
+    const out = await callTool(tool, args);
+    check(
+      out?.envelope?.ok === true && out?.envelope?.errors?.length === 0,
+      `${tool}: finding nothing is ok:true with no reason codes`,
+      JSON.stringify(out?.envelope?.errors),
+    );
+    check(out?.isError === false, `${tool}: is not flagged as an error to the client`);
+    check(
+      out?.envelope?.notes?.length > 0,
+      `${tool}: does say in a note that nothing was found, so the model can tell "ran and found none" from "did not run"`,
+      JSON.stringify(out?.envelope?.notes),
+    );
+  }
+
+  // And the same over the wire, where `isError` is what a client actually reads.
+  const { out } = await session([
+    { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'macho-findliteral', arguments: { binary: corpus, literal: 'no-such-literal-anywhere' }, _meta: meta() } },
+    { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'macho-findliteral', arguments: { binary: corpus, strings: true }, _meta: meta() } },
+    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'macho-findliteral', arguments: { binary: '/nonexistent/nope', literal: 'x' }, _meta: meta() } },
+  ], { expectLines: 3 });
+  const { msgs } = parseStream(out);
+
+  const empty = byId(msgs, 1)?.result;
+  check(
+    empty?.isError === false && empty?.structuredContent?.ok === true,
+    'over MCP: a literal that is absent is not an error',
+    `isError=${empty?.isError}`,
+  );
+  const noStrings = byId(msgs, 2)?.result;
+  check(
+    noStrings?.isError === false && noStrings?.structuredContent?.data?.count === 0,
+    'over MCP: --strings on a binary with no cstring section answers empty, not error',
+    `isError=${noStrings?.isError} count=${noStrings?.structuredContent?.data?.count}`,
+  );
+  check(
+    /gopclntab/.test((noStrings?.structuredContent?.notes || []).join(' ')),
+    'and explains that a Go-style binary keeps its strings elsewhere, so zero is informative',
+    JSON.stringify(noStrings?.structuredContent?.notes),
+  );
+  const missing = byId(msgs, 3)?.result;
+  check(
+    missing?.isError === true && missing?.structuredContent?.errors?.[0] === 'io',
+    'over MCP: a missing binary IS an error, so the two are distinguishable',
+    `isError=${missing?.isError} errors=${JSON.stringify(missing?.structuredContent?.errors)}`,
+  );
+
+  // The new modes, over the wire, with real answers rather than just no-crash.
+  const stringsBin = fs.existsSync(path.join(FIXTURES, 'strings.macho')) ? path.join(FIXTURES, 'strings.macho') : null;
+  if (stringsBin) {
+    const r = await session([
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'macho-findliteral', arguments: { binary: stringsBin, strings: true }, _meta: meta() } },
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'macho-describe', arguments: { binary: stringsBin }, _meta: meta() } },
+      { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'macho-findliteral', arguments: { binary: stringsBin }, _meta: meta() } },
+    ], { expectLines: 3 });
+    const s = parseStream(r.out);
+    const stringsOut = byId(s.msgs, 1)?.result;
+    check(
+      stringsOut?.structuredContent?.data?.count === 4,
+      'over MCP: --strings returns the fixture strings',
+      JSON.stringify(stringsOut?.structuredContent?.data?.count),
+    );
+    check(
+      /__cstring/.test(stringsOut?.content?.[0]?.text || ''),
+      'and names the section in the text block, so the answer is legible without parsing JSON',
+    );
+    const descOut = byId(s.msgs, 2)?.result;
+    const sec0 = descOut?.structuredContent?.data?.slices?.[0];
+    check(
+      Array.isArray(sec0?.sections) && sec0.sections.length === 2 && Array.isArray(sec0?.loadCommands),
+      'over MCP: describe carries segments, sections and load commands',
+      `sections=${sec0?.sections?.length} loads=${sec0?.loadCommands?.length}`,
+    );
+    check(
+      /__cstring/.test(descOut?.content?.[0]?.text || ''),
+      'and the text block lists them, which is the whole point of a summary',
+    );
+    // Neither mode given is a usage error the model can fix, so it must be an
+    // actionable message rather than a silent empty result.
+    const neither = byId(s.msgs, 3)?.result;
+    check(
+      neither?.isError === true && /strings/.test(neither?.structuredContent?.messages?.[0] || ''),
+      'over MCP: findliteral with neither literal nor strings says which one to give',
+      JSON.stringify(neither?.structuredContent?.messages),
+    );
+  }
+}
+
+/* ---- 11. the stdout guard is real ----------------------------------- */
 
 {
   const { guardStdout, stdoutStrayWrites } = await import('../src/mcp.mjs');

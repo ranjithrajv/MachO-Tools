@@ -52,6 +52,89 @@ export const FAT_CIGAM = 0xbebafeca;
 export const LC_SEGMENT = 0x1;
 export const LC_SYMTAB = 0x2;
 export const LC_SEGMENT_64 = 0x19;
+export const LC_UUID_CMD = 0x1b;
+
+/**
+ * Load-command names, for `describe --loads`.
+ *
+ * A *description* table, deliberately. It exists so `parseThin` can print what a
+ * binary declares without this reader having to understand what any of it means
+ * — the line between "this file says it links libSystem" and "this reader can
+ * resolve libSystem" is the project's own "will not do" boundary, and naming the
+ * commands does not cross it. `LC_ENCRYPTION_INFO` is in here for the same
+ * reason: knowing a binary is encrypted is a fact about it.
+ *
+ * Keys are the numeric commands; the `0x80000000` bit is stripped first, because
+ * `LC_REQ_DYLD` only ever *adds* to a base command and every consumer here wants
+ * the base name. An unmapped command is reported by number rather than dropped,
+ * so an unrecognised load command is visible instead of silently absent.
+ */
+export const LOAD_COMMANDS = {
+  0x1: 'LC_SEGMENT',
+  0x2: 'LC_SYMTAB',
+  0x3: 'LC_SYMSEG',
+  0x4: 'LC_THREAD',
+  0x5: 'LC_UNIXTHREAD',
+  0x6: 'LC_LOADFVMLIB',
+  0x7: 'LC_IDFVMLIB',
+  0x8: 'LC_IDENT',
+  0x9: 'LC_FVMFILE',
+  0xa: 'LC_PREPAGE',
+  0xb: 'LC_DYSYMTAB',
+  0xc: 'LC_LOAD_DYLIB',
+  0xd: 'LC_ID_DYLIB',
+  0xe: 'LC_LOAD_DYLINKER',
+  0xf: 'LC_ID_DYLINKER',
+  0x10: 'LC_PREBOUND_DYLIB',
+  0x11: 'LC_ROUTINES',
+  0x12: 'LC_SUB_FRAMEWORK',
+  0x13: 'LC_SUB_UMBRELLA',
+  0x14: 'LC_SUB_CLIENT',
+  0x15: 'LC_SUB_LIBRARY',
+  0x16: 'LC_TWOLEVEL_HINTS',
+  0x17: 'LC_PREBIND_CKSUM',
+  0x18: 'LC_LOAD_WEAK_DYLIB',
+  0x19: 'LC_SEGMENT_64',
+  0x1a: 'LC_ROUTINES_64',
+  0x1b: 'LC_UUID',
+  0x1c: 'LC_RPATH',
+  0x1d: 'LC_CODE_SIGNATURE',
+  0x1e: 'LC_SEGMENT_SPLIT_INFO',
+  0x1f: 'LC_REEXPORT_DYLIB',
+  0x20: 'LC_LAZY_LOAD_DYLIB',
+  0x21: 'LC_ENCRYPTION_INFO',
+  0x22: 'LC_DYLD_INFO',
+  0x23: 'LC_DYLD_INFO_ONLY',
+  0x24: 'LC_LOAD_UPWARD_DYLIB',
+  0x25: 'LC_VERSION_MIN_MACOSX',
+  0x26: 'LC_VERSION_MIN_IPHONEOS',
+  0x27: 'LC_FUNCTION_STARTS',
+  0x28: 'LC_DYLD_ENVIRONMENT',
+  0x29: 'LC_MAIN',
+  0x2a: 'LC_DATA_IN_CODE',
+  0x2b: 'LC_SOURCE_VERSION',
+  0x2c: 'LC_DYLIB_CODE_SIGN_DRS',
+  0x2d: 'LC_ENCRYPTION_INFO_64',
+  0x2e: 'LC_LINKER_OPTION',
+  0x2f: 'LC_LINKER_OPTIMIZATION_HINT',
+  0x30: 'LC_VERSION_MIN_TVOS',
+  0x31: 'LC_VERSION_MIN_WATCHOS',
+  0x32: 'LC_BUILD_VERSION',
+  0x33: 'LC_DYLD_EXPORTS_TRIE',
+  0x34: 'LC_DYLD_CHAINED_FIXUPS',
+  0x35: 'LC_FILESET_ENTRY',
+  0x36: 'LC_ATOM_INFO',
+  0x37: 'LC_FUNCTION_VARIANTS',
+  0x38: 'LC_FUNCTION_VARIANT_FIXUPS',
+  0x39: 'LC_TARGET_TRIPLE',
+};
+
+/** Name a load command, or report its number when this table has no entry. */
+export function loadCommandName(cmd) {
+  // LC_REQ_DYLD is 0x80000000 and is *added* to a base command, so stripping it
+  // finds LC_RPATH for 0x8000001c. It is never a command on its own.
+  return LOAD_COMMANDS[cmd & 0x7fffffff] || `0x${(cmd >>> 0).toString(16)}`;
+}
 
 /** nlist_64 type field: N_STAB and N_TYPE masks. */
 export const N_STAB = 0xe0;
@@ -193,11 +276,15 @@ export function parseThin(f, base = 0) {
   if (!is64 && magic !== MH_MAGIC_32) return null;
 
   const cputype = hdr.readUInt32LE(4);
+  const filetype = hdr.readUInt32LE(12);
   const ncmds = hdr.readUInt32LE(16);
+  const sizeofcmds = hdr.readUInt32LE(20);
   let off = base + (is64 ? 32 : 28);
   const segments = [];
   const sections = [];
+  const loadCommands = [];
   let symtab = null;
+  let uuid = null;
 
   for (let i = 0; i < ncmds; i++) {
     const lc = f.read(off, 8);
@@ -206,7 +293,24 @@ export function parseThin(f, base = 0) {
     const cmdsize = lc.readUInt32LE(4);
     if (cmdsize < 8) break; // a zero cmdsize would loop forever
 
-    if (cmd === LC_SYMTAB) {
+    // Recorded before any decoding, so every command appears even when nothing
+    // here knows what it means. A reader that silently dropped the ones it did
+    // not recognise would make an unfamiliar binary look simpler than it is,
+    // which is the shape of a wrong answer rather than a partial one.
+    loadCommands.push({ cmd, name: loadCommandName(cmd), cmdsize, offset: off - base });
+
+    if (cmd === LC_UUID_CMD) {
+      // 16 bytes at offset 8. A UUID is a value rather than an interpretation,
+      // which is why it is read here and `LC_CODE_SIGNATURE` is not: reading the
+      // bytes of an identifier is the same class of act as reading a section's
+      // size, whereas following a code signature is decoding a structure. The
+      // two differ by whether answering correctly requires understanding
+      // something else's format.
+      const s = f.read(off, 24);
+      if (s.length >= 24) {
+        uuid = s.toString('hex', 8, 24).replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5');
+      }
+    } else if (cmd === LC_SYMTAB) {
       const s = f.read(off, 24);
       if (s.length >= 24) {
         symtab = {
@@ -229,31 +333,53 @@ export function parseThin(f, base = 0) {
           fileoff: wide ? s.readBigUInt64LE(40) : BigInt(s.readUInt32LE(32)),
           filesize: wide ? s.readBigUInt64LE(48) : BigInt(s.readUInt32LE(36)),
         });
-        // Section entries are 80 bytes each and exist only in the 64-bit form.
-        if (wide) {
-          const nsects = s.readUInt32LE(64);
-          for (let k = 0; k < nsects; k++) {
-            const sc = f.read(off + 72 + k * 80, 80);
-            if (sc.length < 80) break;
-            sections.push({
-              sectname: sc.toString('latin1', 0, 16).replace(/\0.*$/, ''),
-              segname: sc.toString('latin1', 16, 32).replace(/\0.*$/, ''),
-              addr: sc.readBigUInt64LE(32),
-              size: Number(sc.readBigUInt64LE(40)),
-              offset: sc.readUInt32LE(48),
-              // Section attributes (offset 64 in `section_64`). Read because
-              // S_ATTR_*_INSTRUCTIONS is the only in-file signal that separates
-              // code from data, and a byte scanner that cannot tell them apart
-              // reports data as call sites — see `instructionSections`.
-              flags: sc.readUInt32LE(64),
-            });
-          }
+        // Section entries follow the segment command. Both forms carry them —
+        // this used to read only the 64-bit one, which meant a 32-bit slice
+        // reported zero sections and every address lookup in it came back "not
+        // in a section".
+        //
+        // The offsets below are transcribed from `<mach-o/loader.h>` in the macOS
+        // SDK rather than derived from the 64-bit form, because the two layouts
+        // are not related by a scale factor:
+        //
+        //   field       section_64   section
+        //   addr            32          32
+        //   size            40          36
+        //   offset          48          40
+        //   flags           64          56
+        //   entry size      80          68
+        //
+        // `addr` is the only field at the same offset in both, because the two
+        // 16-byte name fields above it are the same size in both. Every 32-bit
+        // field after it shifts the next one 4 bytes earlier, so `flags` ends up
+        // 8 bytes apart and the entries differ in length by 12 rather than by a
+        // factor. Scaling 48 by 68/80 happens to give 40 — the right answer by
+        // luck, and the wrong way to arrive at one.
+        const sectsAt = wide ? 64 : 48;          // nsects, in the segment command
+        const sectSize = wide ? 80 : 68;
+        const sectBase = off + (wide ? 72 : 56);  // the segment command's own size
+        const nsects = s.readUInt32LE(sectsAt);
+        for (let k = 0; k < nsects; k++) {
+          const sc = f.read(sectBase + k * sectSize, sectSize);
+          if (sc.length < sectSize) break;
+          sections.push({
+            sectname: sc.toString('latin1', 0, 16).replace(/\0.*$/, ''),
+            segname: sc.toString('latin1', 16, 32).replace(/\0.*$/, ''),
+            addr: wide ? sc.readBigUInt64LE(32) : BigInt(sc.readUInt32LE(32)),
+            size: Number(wide ? sc.readBigUInt64LE(40) : sc.readUInt32LE(36)),
+            offset: sc.readUInt32LE(wide ? 48 : 40),
+            // Section attributes. Read because S_ATTR_*_INSTRUCTIONS is the only
+            // in-file signal that separates code from data, and a byte scanner
+            // that cannot tell them apart reports data as call sites — see
+            // `instructionSections`. Offset 64 in `section_64`, 56 in `section`.
+            flags: sc.readUInt32LE(wide ? 64 : 56),
+          });
         }
       }
     }
     off += cmdsize;
   }
-  return { is64, cputype, segments, sections, symtab };
+  return { is64, cputype, filetype, ncmds, sizeofcmds, segments, sections, loadCommands, symtab, uuid };
 }
 
 /**
@@ -358,21 +484,35 @@ export function readSymbols(f, base, thin) {
   const entries = [];
   let defined = 0;
   const BATCH = 20000;
+  // `nlist` is 16 bytes in the 64-bit form and 12 in the 32-bit one, and its
+  // `n_value` is a `uint64_t` in the first and a `uint32_t` in the second. This
+  // used to read 16-byte entries with a 64-bit value unconditionally, so every
+  // symbol in a 32-bit slice was read at the wrong stride: names came from the
+  // wrong place in the string table, `n_type` from what was actually another
+  // entry's `n_strx`, and the address from bytes that were never an address. The
+  // symptom was not an error — it was plausible-looking wrong symbols, which is
+  // why the stride is taken from the parse rather than written as a constant.
+  const nlistSize = thin.is64 ? 16 : 12;
   for (let b = 0; b < symtab.nsyms; b += BATCH) {
     const cnt = Math.min(BATCH, symtab.nsyms - b);
-    const blk = f.read(base + symtab.symoff + b * 16, cnt * 16);
-    if (blk.length < cnt * 16) break;
+    const blk = f.read(base + symtab.symoff + b * nlistSize, cnt * nlistSize);
+    if (blk.length < cnt * nlistSize) break;
     for (let i = 0; i < cnt; i++) {
-      const info = blk[i * 16 + 4];
+      const at = i * nlistSize;
+      const info = blk[at + 4];
       if (info & N_STAB) continue;
-      const strx = blk.readUInt32LE(i * 16);
+      const strx = blk.readUInt32LE(at);
       if (strx >= str.length) continue;
       const isDefined = (info & N_TYPE) === N_SECT;
       if (isDefined) defined++;
       const nm = nameAt(strx);
       if (!nm) continue;
       names.push(nm);
-      entries.push({ name: nm, addr: blk.readBigUInt64LE(i * 16 + 8), defined: isDefined });
+      entries.push({
+        name: nm,
+        addr: thin.is64 ? blk.readBigUInt64LE(at + 8) : BigInt(blk.readUInt32LE(at + 8)),
+        defined: isDefined,
+      });
     }
   }
   return { names, entries, defined, total: symtab.nsyms, note: null };
@@ -437,6 +577,21 @@ export function preferredSlice(f, prefer) {
     if (!best || nsyms > best.nsyms) best = entry;
   }
   return best;
+}
+
+/**
+ * True when a slice's architecture name satisfies a requested one.
+ *
+ * The comparison is by name because that is what `--arch` takes, and names are
+ * what every tool already reports. A caller asking for `arm64` against an
+ * `arm64e` slice is asking for the same instruction set, so the `e` suffix is
+ * ignored — otherwise `--arch=arm64` would read nothing from an Apple-silicon
+ * system binary whose slice is named `arm64e`, and report the file as empty.
+ */
+export function archMatches(sliceArch, want) {
+  if (!want) return true;
+  if (sliceArch === want) return true;
+  return String(sliceArch).replace(/e$/, '') === String(want).replace(/e$/, '');
 }
 
 /**
