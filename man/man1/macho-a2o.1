@@ -49,10 +49,16 @@ with no offset, which is a third answer distinct from both "mapped to a byte" an
 .SH OPTIONS
 .TP
 .BI \-\-arch= name
-Read one architecture,
-.B x86_64
+Read one architecture by name:
+.BR x86_64 ,
+.BR arm64 ,
+.BR arm64e ,
+.BR arm64_32 ,
+.BR ppc ,
+.BR ppc64 ,
+.BR arm
 or
-.BR arm64 .
+.BR i386 .
 A universal binary maps
 .B __TEXT
 at 0x100000000 in

@@ -45,7 +45,7 @@ const HELP = [
   '  --sections        list every section: segment, name, address, size, flags',
   '  --segments        list every segment: name, vm range, file range',
   '  --loads           list every load command by name and size',
-  '  --arch=<name>     x86_64 or arm64; read one slice of a universal binary',
+  '  --arch=<name>     read one slice of a universal binary (x86_64, arm64, arm64e, arm64_32, ppc, ppc64, arm, i386)',
   '  --json            one JSON object on stdout; prose to stderr',
   '  -b, --binary <p>  the binary to read',
   '  -h, --help        this message',

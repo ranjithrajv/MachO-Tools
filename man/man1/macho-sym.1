@@ -46,10 +46,16 @@ appears nine times is harder to read than one where it appears once.
 .SH OPTIONS
 .TP
 .BI \-\-arch= name
-Prefer one architecture,
-.B x86_64
+Prefer one architecture by name:
+.BR x86_64 ,
+.BR arm64 ,
+.BR arm64e ,
+.BR arm64_32 ,
+.BR ppc ,
+.BR ppc64 ,
+.BR arm
 or
-.BR arm64 .
+.BR i386 .
 This is a preference, not a requirement: an architecture that is absent falls
 back to the richest slice rather than failing.
 .TP

@@ -56,7 +56,17 @@ or from the environment rather than from the last positional.
 .SH OPTIONS
 .TP
 .BI \-\-arch= name
-Prefer one architecture. A preference, not a requirement: an absent architecture
+Prefer one architecture by name:
+.BR x86_64 ,
+.BR arm64 ,
+.BR arm64e ,
+.BR arm64_32 ,
+.BR ppc ,
+.BR ppc64 ,
+.BR arm
+or
+.BR i386 .
+A preference, not a requirement: an absent architecture
 falls back to the richest slice.
 .TP
 .BR \-b ", " \-\-binary " " \fIpath\fR

@@ -73,6 +73,7 @@
     "test:mutation": "node test/mutation-check.mjs",
     "test:mcp": "node test/mcp.mjs",
     "test:skill": "node test/skill.mjs",
+    "test:types": "node test/types.mjs",
     "test:publish": "node test/publish.mjs",
     "test:all": "npm run test:fixtures && npm test && npm run test:mcp && npm run test:skill && npm run test:publish && npm run test:mutation"
   },

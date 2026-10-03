@@ -150,15 +150,29 @@ export interface Symtab {
   strsize: number;
 }
 
+/** One load command, as recorded before any decoding. */
+export interface LoadCommand {
+  cmd: number;
+  name: string;
+  cmdsize: number;
+  /** Offset from the start of the slice, not of the file. */
+  offset: number;
+}
+
 /** A parsed thin Mach-O header plus its load-command tables. */
 export interface Thin {
   is64: boolean;
   cputype: number;
   /** The subtype from the header, byte 8. See {@link FatSlice.cpusubtype}. */
   cpusubtype: number;
+  filetype: number;
+  ncmds: number;
+  sizeofcmds: number;
   segments: Segment[];
   sections: Section[];
+  loadCommands: LoadCommand[];
   symtab: Symtab | null;
+  uuid: string | null;
 }
 
 /** One symbol-table entry. */
@@ -298,6 +312,12 @@ export declare function describe(path: string): {
     textAddr: bigint | null;
     textSize: number;
     codeSections: number;
+    /** The slice's segments, as `{ segname, vmaddr, vmsize, fileoff, filesize }`. */
+    segments: Segment[];
+    sections: Section[];
+    loadCommands: LoadCommand[];
+    /** Lowercase RFC-4122, or null when the slice carries no `LC_UUID`. */
+    uuid: string | null;
   }>;
 };
 
@@ -591,6 +611,50 @@ export declare function mapLiteral(
   slices: Array<{
     arch: string; offset: number; size: number; inText: number; nsyms: number;
   }>;
+};
+
+/**
+ * NUL-terminated strings in the C-string sections, with where each one loads.
+ *
+ * `arch` is what was asked for, `archHonoured` is that value when a slice
+ * satisfied it and `null` when none did, and `archRead` is the ground truth of
+ * what actually answered — the same three fields `findLiteral` returns, because
+ * an absent architecture is a preference rather than a filter and a search that
+ * reads a slice the caller did not ask for has to say so.
+ */
+export declare function findStrings(
+  path: string,
+  opts?: {
+    arch?: string;
+    min?: number;
+    max?: number;
+    filter?: string | null;
+  },
+): {
+  arch: string | null;
+  min: number;
+  count: number;
+  truncated: boolean;
+  strings: Array<{
+    off: number;
+    slice: string;
+    vaddr: bigint;
+    section: string;
+    length: number;
+    text: string;
+  }>;
+  scanned: number;
+  slices: Array<{
+    arch: string;
+    offset: number;
+    size: number;
+    sections: string[];
+    strings: number;
+    scanned: number;
+  }>;
+  sections: string[];
+  archHonoured: string | null;
+  archRead: string[];
 };
 
 /**

@@ -70,7 +70,7 @@ const HELP = [
   '  --case-sensitive   match case exactly (regex mode and substring mode)',
   '  --all-imp          include imported symbols, not just defined ones',
   '  --no-dedupe        one row per table entry rather than per name',
-  '  --arch=<name>      prefer an architecture (x86_64, arm64)',
+  '  --arch=<name>      prefer an architecture (x86_64, arm64, arm64e, arm64_32, ppc, ppc64, arm, i386)',
   '  -b, --binary <p>   the binary, if every positional is part of the query',
   '  --json             one JSON object on stdout; prose to stderr',
   '  -h, --help         this message',

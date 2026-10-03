@@ -1054,12 +1054,20 @@ export function findStrings(path, { arch, min = 4, max = 0, filter = null } = {}
     const slices = [];
     const strings = [];
     let scanned = 0;
+    // Whether some slice satisfied `arch`, and the first slice that did not.
+    // Both are needed and they are different questions — a universal binary with
+    // `--arch=arm64` has one matching and one non-matching slice, and recording
+    // "wanted = true" for the second would report the request as unsatisfied.
+    // `fallback` is what makes an absent architecture a preference rather than
+    // a filter: read one slice anyway rather than report nothing.
+    let matched = false;
+    let fallback = null;
 
-    for (const s of slicesOf(f)) {
-      const thin = parseThin(f, s.offset);
-      if (!thin) continue;
-      const name = s.thin ? sliceArchName(thin.cputype, thin.cpusubtype) : sliceArchName(s.cputype, s.cpusubtype);
-
+    // One slice's C-string sections, walked for NUL-delimited runs. A function
+    // rather than inline because the `--arch` fallback below has to run exactly
+    // this over a slice the loop skipped, and two copies of a 30-line walk is
+    // how the two paths come to disagree.
+    const scan = (s, thin, name) => {
       // The C-string sections. `__cstring` is the real one; `__cfstring` is
       // CFString literals, whose pointers are 32 bytes of structure rather than
       // text, so including it would report addresses as if they were strings.
@@ -1069,7 +1077,7 @@ export function findStrings(path, { arch, min = 4, max = 0, filter = null } = {}
       const wanted = CSTRING_SECTIONS.filter((n) => thin.sections.some((x) => x.sectname === n));
       if (!wanted.length) {
         slices.push({ arch: name, offset: s.offset, size: s.size, sections: [], strings: 0, scanned: 0 });
-        continue;
+        return;
       }
 
       let found = 0;
@@ -1113,7 +1121,29 @@ export function findStrings(path, { arch, min = 4, max = 0, filter = null } = {}
         }
         slices.push({ arch: name, offset: s.offset, size: s.size, sections: wanted, strings: found, scanned: buf.length });
       }
+    };
+
+    for (const s of slicesOf(f)) {
+      const thin = parseThin(f, s.offset);
+      if (!thin) continue;
+      const name = s.thin ? sliceArchName(thin.cputype, thin.cpusubtype) : sliceArchName(s.cputype, s.cpusubtype);
+      // `arch` is a preference, not a filter, and this must match what
+      // `findLiteral` does: a named slice wins if present, otherwise the first
+      // slice is read anyway. Two tools that report the same `archRead` field
+      // cannot mean different things by `--arch`.
+      if (arch && !archMatches(name, arch)) {
+        if (!fallback) fallback = { s, thin, name }; // first non-matching slice
+        continue;
+      }
+      if (arch) matched = true;
+      scan(s, thin, name);
     }
+
+    // No slice matched `--arch`: read one anyway rather than report nothing, and
+    // say so via `archHonoured: null`. Refusing would turn a mistyped
+    // architecture into "there are no strings in this file", which is a claim
+    // about the bytes and is false.
+    if (arch && !matched && fallback) scan(fallback.s, fallback.thin, fallback.name);
 
     strings.sort((a, b) => a.off - b.off);
     const capped = max > 0 ? strings.slice(0, max) : strings;
@@ -1126,6 +1156,13 @@ export function findStrings(path, { arch, min = 4, max = 0, filter = null } = {}
       scanned,
       slices,
       sections: CSTRING_SECTIONS,
+      // Same three fields `findLiteral` returns, for the same reason: `arch` is
+      // what was asked for, `archHonoured` is that value when a slice satisfied
+      // it and `null` when none did, and `archRead` is the ground truth of what
+      // actually answered. A string search that reads a slice the caller did
+      // not ask for is the failure this makes visible rather than silent.
+      archHonoured: arch && matched ? arch : null,
+      archRead: slices.map((x) => x.arch),
     };
   });
 }

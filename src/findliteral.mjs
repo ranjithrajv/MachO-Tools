@@ -54,7 +54,7 @@ const HELP = [
   '',
   'options:',
   '  --text                 search __TEXT only, rather than the whole file',
-  '  --arch=<name>          x86_64 or arm64; read one slice of a universal binary',
+  '  --arch=<name>          read one slice of a universal binary (x86_64, arm64, arm64e, arm64_32, ppc, ppc64, arm, i386)',
   '  -b, --binary <p>       the binary to read',
   '  --json                 one JSON object on stdout; prose to stderr',
   '  -h, --help             this message',

@@ -45,7 +45,7 @@ const HELP = [
   '  -b/--binary, $MACHO_BINARY or $MACHO_APP.',
   '',
   'options:',
-  '  --arch=<name>      read one architecture (x86_64, arm64)',
+  '  --arch=<name>      read one architecture (x86_64, arm64, arm64e, arm64_32, ppc, ppc64, arm, i386)',
   '  -b, --binary <p>   the binary to read',
   '  --json             one JSON object on stdout; prose to stderr',
   '  -h, --help         this message',

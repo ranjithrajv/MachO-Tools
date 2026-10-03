@@ -90,9 +90,9 @@ const MUTATIONS = [
   {
     name: 'preferredSlice requires the preferred architecture',
     file: 'src/macho.mjs',
-    find: `    if (prefer && arch === prefer) return entry; // a named request wins outright
+    find: `    if (prefer && archMatches(arch, prefer)) return entry;
     if (!best || nsyms > best.nsyms) best = entry;`,
-    replace: `    if (prefer) { if (arch === prefer) return entry; continue; } // MUTATED: required
+    replace: `    if (prefer) { if (archMatches(arch, prefer)) return entry; continue; } // MUTATED: required
     if (!best || nsyms > best.nsyms) best = entry;`,
     expect: /prefer=x86_64/,
   },
