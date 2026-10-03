@@ -2,11 +2,12 @@
 
 [![test](https://github.com/ranjithrajv/MachO-Tools/actions/workflows/test.yml/badge.svg)](https://github.com/ranjithrajv/MachO-Tools/actions/workflows/test.yml)
 
-Mach-O binary introspection for **macOS and iOS** binaries — thin or universal,
-32-bit or 64-bit, `arm64`/`arm64e`/`x86_64`/`i386`/`armv7`. Reads fat headers,
-symbol tables, sections and `__text`, and answers questions about an executable
-you know nothing about. **It knows nothing about any application** — no formats,
-no products, no save files. Every answer is a fact about the file format or about
+Mach-O binary introspection for **macOS, iOS, iPadOS, tvOS, watchOS and
+visionOS** binaries — thin or universal, 32-bit or 64-bit, `arm64`, `arm64e`,
+`arm64_32`, `x86_64`, `i386`, `armv7`, `armv7k`. Reads fat headers, symbol
+tables, sections and `__text`, and answers questions about an executable you know
+nothing about. **It knows nothing about any application** — no formats, no
+products, no save files. Every answer is a fact about the file format or about
 the bytes.
 
 **Mach-O is the whole scope, chosen.** This is a tool built around one format,
@@ -31,19 +32,43 @@ No dependencies, no build step, no install, no network. Node ≥ 22.15.
 
 ## What it covers
 
+Mach-O, on every platform Apple ships it — which is the whole reason one reader
+is enough:
+
+| Platform | Architectures |
+|---|---|
+| **macOS** | `x86_64`, `arm64`, `i386` |
+| **iOS / iPadOS** | `arm64`, `arm64e`, `armv7` |
+| **tvOS** | `arm64` |
+| **watchOS** | `arm64_32`, `armv7k` |
+| **visionOS** | `arm64` |
+
 | | |
 |---|---|
-| **Format** | Mach-O — thin and fat (universal), 32-bit and 64-bit, little-endian |
-| **macOS** | `x86_64`, `arm64`, `i386` |
-| **iOS / iPadOS** | `arm64`, `arm64e`, `armv7` — including App Store binaries, whose `__TEXT` is encrypted |
-| **Also reported** | `platform` and `sdk` from `LC_BUILD_VERSION` (`ios`, `macos`, `tvos`, `watchos`, `visionos`, and the simulators), the `MH_*` filetype, and `ppc` / `ppc64` / `arm64_32` by name |
+| **Format** | thin and fat (universal), 32-bit and 64-bit, little-endian |
+| **Also reported** | the target platform and SDK (`LC_BUILD_VERSION`), the `MH_*` filetype, and `ppc` / `ppc64` by name |
 | **Not covered** | big-endian Mach-O, ELF, PE, the dyld shared cache, firmware images |
 | **Hosts** | Linux, macOS and Windows — one Node runtime, no dependencies, no build step |
 
-Big-endian is **refused, not misread**. A PowerPC or 68k slice is named and listed
-in the slice table, but reports `readable: false` with `unknown-encoding` rather
-than being parsed as if its bytes were little-endian — so a NeXTSTEP or classic
-Mac OS binary is visibly unsupported instead of quietly wrong.
+Four things about that table are worth stating rather than leaving to be
+discovered:
+
+- **visionOS needs nothing new.** A Vision Pro binary is arm64 Mach-O — the M2 —
+  so the same reader handles it and only the platform constant distinguishes it.
+  `LC_BUILD_VERSION` reports `visionos` and `visionos-simulator` separately.
+- **iPadOS is reported as `ios`**, and that is the file's doing, not the tool's.
+  Apple defines `PLATFORM_IOS` and no separate iPadOS constant, so an iPadOS
+  binary says `ios` and reporting anything else would be a fabrication.
+- **watchOS is the awkward one.** `arm64_32` is a 32-bit ABI on the arm64
+  instruction set, so it uses the *64-bit* Mach-O header with 32-bit pointers —
+  `bits: 64` is right about the file and wrong about the pointer. And `armv7k`
+  reports as `arm`: the subtype is what makes it a watch, so it is the platform
+  command, not the architecture name, that identifies one.
+- **Big-endian is refused, not misread.** A PowerPC or 68k slice is named and
+  listed in the slice table, but reports `readable: false` with
+  `unknown-encoding` rather than being parsed as if its bytes were little-endian
+  — so a NeXTSTEP or classic Mac OS binary is visibly unsupported instead of
+  quietly wrong.
 
 An App Store binary's `__TEXT` is ciphertext, which changes what a zero result
 means. That is not a footnote: see

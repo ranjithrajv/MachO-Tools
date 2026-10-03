@@ -158,10 +158,17 @@ but does not interpret them. Not ELF, not PE. **Little-endian only** — big-end
 Mach-O (NeXTSTEP on m68k/SPARC, classic Mac OS on PowerPC) is refused as
 `unknown-encoding`; a `ppc` slice is named and reported `readable: false`.
 
-macOS and iOS are both covered: `arm64`, `arm64e`, `x86_64`, `i386`, `armv7`,
-32- and 64-bit, thin and universal. `macho-describe` reports the platform
-(`ios`, `macos`, the simulators), the filetype, and whether an App Store binary's
-`__TEXT` is encrypted — which is the one thing that makes a zero result from
+Every Apple platform is covered, because they all ship Mach-O: **macOS**
+(`x86_64`, `arm64`, `i386`), **iOS and iPadOS** (`arm64`, `arm64e`, `armv7`),
+**tvOS** (`arm64`), **watchOS** (`arm64_32`, `armv7k`) and **visionOS**
+(`arm64`) — 32- and 64-bit, thin and universal. iPadOS reports as `ios` because
+Apple has no separate platform constant for it, and `armv7k` reports as `arm`,
+so the platform command is what identifies a watch build rather than the
+architecture name.
+
+`macho-describe` reports the platform (`ios`, `macos`, `tvos`, `watchos`, the
+simulators), the filetype, and whether an App Store binary's `__TEXT` is
+encrypted — which is the one thing that makes a zero result from
 `macho-findcall` mean "could not look" rather than "nothing calls this".
 
 When you need to know what the code *does* rather than where it is, use Ghidra
