@@ -1,0 +1,105 @@
+#!/bin/sh
+# The checks that are cheap enough to always run and expensive to skip.
+#
+#   1. test/fixtures.mjs --check  ~0.1s — the corpus still matches its generator
+#   2. test/smoke.mjs             ~4s   — 321 checks on binaries the tools were
+#                                          not written for, including the
+#                                          no-application-knowledge boundary
+#
+# ENABLE IT, once per clone:
+#
+#     git config core.hooksPath .githooks
+#
+# A versioned directory rather than `.git/hooks/`, because `.git/hooks/` is not
+# tracked: a fresh clone would arrive with the guard silently missing, which is
+# the same failure as having no guard reached by a different route. That is also
+# why this lives here rather than only in the parent workspace — a standalone
+# clone does not contain the workspace, which is exactly the gap that let this
+# hook go missing from this repository for its whole history.
+#
+# CI and this hook are not alternatives and neither replaces the other. CI covers
+# what is pushed; this covers the local commit loop, which is where a stale
+# fixture actually gets committed from.
+#
+# `mutation-check.mjs` is deliberately NOT here: it copies the tree and re-runs
+# the suite eleven times inside the copy, so it takes ~2m and has its own CI job.
+# It is part of `npm run test:all`. A gate nobody can afford to run is a gate
+# nobody runs, and 2 minutes on every commit is how a fast gate stops being run.
+#
+# Override with --no-verify. That is sometimes the right answer; the fix is to
+# re-run these by hand before pushing, not to delete the hook.
+
+set -e
+
+# A hook that cannot run must refuse, not pass.
+#
+# The rule this project keeps re-learning is that a verification which cannot
+# fail is worse than a missing one, because it reports success. A hook that
+# carried on without checking anything would exit 0, and a green hook is
+# precisely what stops anyone looking.
+#
+# `node` is checked *before* git is used, and before `$root` is needed. That
+# ordering is deliberate and was corrected by testing: an earlier version
+# resolved `$root` first, so on a PATH without `node` — where a fresh shell or a
+# cron-ish context is the likely cause — the hook died on `git` with exit 127
+# and no explanation. Still a refusal, but an unreadable one. The likely cause
+# should be the thing named.
+if ! command -v node >/dev/null 2>&1; then
+  echo "pre-commit: node is not on PATH — refusing rather than passing unchecked." >&2
+  echo "            MachO-Tools needs node >= 22.15 and installs no dependencies." >&2
+  exit 1
+fi
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || {
+  echo "pre-commit: could not resolve the repository root from git." >&2
+  exit 1
+}
+
+if [ ! -f "$root/test/fixtures.mjs" ] || [ ! -f "$root/test/smoke.mjs" ]; then
+  echo "pre-commit: no test/ suites under $root." >&2
+  echo "            If core.hooksPath points at another repository's .githooks," >&2
+  echo "            that is the bug — this hook must not guard a different tree." >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# 1. The corpus must match its generator.
+#
+# The cheapest and highest-value check here, and the one nothing else would
+# catch. `fixtures.mjs --check` re-derives all 42,060 bytes of the generated
+# corpus and compares them to what is on disk, so a hand-edited or stale fixture
+# cannot pass as a test.
+#
+# Every other check runs *against* those fixtures, so a corrupted one lowers the
+# value of all of them while the suite stays green. That is the quietest failure
+# this project has, and it is why this runs first: it is the input to everything
+# below it.
+# ---------------------------------------------------------------------------
+if ! node "$root/test/fixtures.mjs" --check >/dev/null 2>&1; then
+  echo "pre-commit: the fixture corpus does not match its generator." >&2
+  node "$root/test/fixtures.mjs" --check >&2 || true
+  echo >&2
+  echo "Fix: 'node test/fixtures.mjs' to regenerate. Never hand-edit a file under" >&2
+  echo "      test/fixtures/ — the checked-in bytes are the generator's output," >&2
+  echo "      so an edit to one is invisible until this check runs." >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# 2. The suite.
+#
+# This also carries the `boundary:` checks, so committing a publisher name, a
+# product title or a container format into `src/`, `test/` or the shipped files
+# is refused here rather than only in CI. That enforcement is the answer to this
+# project's one existential risk, which is why it belongs in the fast local gate
+# and not just on the remote runner.
+# ---------------------------------------------------------------------------
+if ! node "$root/test/smoke.mjs" >/dev/null 2>&1; then
+  echo "pre-commit: test/smoke.mjs failed." >&2
+  node "$root/test/smoke.mjs" >&2 || true
+  echo >&2
+  echo "A skip means the input was unavailable, not that the tool passed." >&2
+  exit 1
+fi
+
+exit 0

@@ -7,16 +7,23 @@
 # something, so CI is where it has to be exercised — including on the platforms
 # whose system binaries cannot possibly be present.
 #
-# Three jobs, deliberately:
+# Four jobs, deliberately:
 #
 #   fixtures  — build the corpus and confirm the checked-in binaries match what
 #               the generator produces. A stale or hand-edited fixture is a test
 #               that no longer tests, and it would otherwise go unnoticed.
 #   test      — the reader suite, on macOS, Linux and Windows.
-#   protocol  — the MCP server and the agent skill, on Linux.
+#   protocol  — the MCP server, the agent skill, the declared types and the
+#               publish contract, on Linux.
 #   mutation  — prove the suite fails when the reader is broken. Slow, and the
 #               job most likely to rot, so it runs on its own rather than
 #               blocking every push's test job.
+#
+# The `protocol` job is named for what it started as and now also carries the
+# type and publish suites. Renaming it to match its contents would mean renaming
+# it on every addition; what the four share is that none is reachable by testing
+# the reader — one drives a subprocess, one holds prose to the tree, one holds
+# the declared contract to the code, one asks whether the package can ship.
 name: test
 
 on:
@@ -84,7 +91,7 @@ jobs:
   # the failure they exist for, and three platforms of them would slow every push
   # for coverage they would not add.
   protocol:
-    name: mcp protocol and agent skill
+    name: mcp protocol, agent skill, and the publish contract
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -97,6 +104,19 @@ jobs:
         run: node test/mcp.mjs
       - name: The agent skill matches the tools
         run: node test/skill.mjs
+      # A suite that asserts what no amount of reader testing can reach.
+      #
+      # `publish.mjs` asserts the package can actually be shipped and that the
+      # docs name it. `npm publish --dry-run` cannot: it packed this package,
+      # printed `+ MachO-Tools@0.1.0` and exited 0 on a name npm refuses,
+      # because a dry run does not ask the registry whether a name is
+      # acceptable. So the one command that looks like the check reported success
+      # on the one thing that was broken.
+      #
+      # Linux only, like the rest of this job: it reads the repository, spawns
+      # nothing platform-specific, and asserts nothing that differs by OS.
+      - name: The package can be published and the docs name it
+        run: node test/publish.mjs
 
   mutation:
     name: mutation

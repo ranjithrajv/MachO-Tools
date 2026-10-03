@@ -19,8 +19,9 @@ exist.
 |---|---|
 | GitHub repo created | 2026-10-02 (yesterday) |
 | Stars / forks / watchers | 0 / 0 / 0 |
-| Published on npm | **No.** `npm view MachO-Tools` → `E404` |
+| Published on npm | **No.** `npm view macho-tools` → `E404` |
 | `api.npmjs.org/downloads` | 404, package not found |
+| Publishable? | **Yes, since 2026-10-03.** It was not: the name was `MachO-Tools`, and npm refuses a capital letter in a name published for the first time. `npm publish --dry-run` hid this by printing `+ MachO-Tools@0.1.0` and exiting 0. |
 
 The README's first install instruction is:
 
@@ -172,7 +173,7 @@ and which currently fail.
 | The five-way comparison table | `README.md` | Omits `ipsw` (3.8k★), `llvm-objdump`, Go `debug/macho`, `rizin`, and `capa` (6,209★ — byte-level triage with JSON, the closest thing to `findliteral` at scale). |
 | "`nm` and `otool` do not run off macOS at all" → cross-platform is the opportunity | `TOWS.md` | True but incomplete. LLVM, `ipsw`, and `rizin` all run everywhere. The defensible gap is *no toolchain*, not *no macOS*. |
 | "AI and automated analysis — `--json` on every tool and an importable API is shaped for pipeline use" | `TOWS.md` Opportunities | Hopper ships an MCP server. Binary Ninja 6.0 ships MCP. `ipsw` ships an agent skill for Claude Code/Codex/Gemini. `@ebowwa/mcp-nm` exists on npm. The angle is now table stakes, not differentiation. |
-| "Publishable as configured — nothing blocking an `npm publish`" | `TOWS.md` Strengths | The manifest is complete. The package is not published. `npm view` returns E404. |
+| "Publishable as configured — nothing blocking an `npm publish`" | `TOWS.md` Strengths | **Wrong in the way that mattered.** The manifest was complete; the *name* was not. npm refuses a capital letter in a name published for the first time, so `MachO-Tools` could never ship — and `npm publish --dry-run` printed `+ MachO-Tools@0.1.0` and exited 0, so the command that looks like the check reported success. Corrected to `macho-tools`, with `test/publish.mjs` asserting it. |
 | "202 passed, 1 skipped" | `README.md` | The suite now reports **213 passed, 1 skipped**. |
 | "The reader is portable buffer arithmetic, and `nm` and `otool` do not run off macOS at all" | `README.md` | Accurate, and the strongest true claim in the document. It just needs to name what it is competing *against* — which is not `nm`. |
 
@@ -294,9 +295,12 @@ bytes are not Mach-O", and conflating them is the human-facing version of 5.1.
 ## 6. What to do, in order
 
 1. **Publish to npm.** Nothing else on this list matters until someone can
-   `npm install -g MachO-Tools`. Right now the README's headline install
-   instruction returns E404, and no competitor analysis is worth making to an
-   audience of zero. Then add a release, and `brew` if the man pages are real.
+   `npm install -g macho-tools`. The blocker was the name, not the manifest: npm
+   refuses a capital letter in a name published for the first time, so
+   `MachO-Tools` could never have shipped — and `npm publish --dry-run` reported
+   success on it anyway. Fixed to `macho-tools` on 2026-10-03, with
+   `test/publish.mjs` now asserting it in CI, since a dry run cannot. Then cut a
+   release, and `brew` if the man pages are real.
 
 2. **Add the missing names to the comparison table**, and put `ipsw` in it
    honestly as the superset it is. A table that names the strongest competitor
@@ -349,7 +353,7 @@ gh api repos/mandiant/capa           --jq .stargazers_count
 
 # the project itself
 gh api repos/ranjithrajv/MachO-Tools --jq '{stars:.stargazers_count,created:.created_at}'
-npm view MachO-Tools version          # E404 as of 2026-10-03
+npm view macho-tools version          # E404 as of 2026-10-03 — valid name, not yet published
 
 # npm demand in the niche
 npm view macho      # 31,061 downloads/mo

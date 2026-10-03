@@ -116,11 +116,27 @@ either your change fixed the bug for good (remove the mutation and say so in the
 PR) or it moved the code the anchor pointed at (fix the anchor in the same
 commit).
 
-CI runs all three jobs — `fixtures` on ubuntu, `smoke` on a macOS/Linux/Windows
-matrix, `mutation` on ubuntu. In the parent workspace there is also a
-versioned pre-commit hook (`.githooks/`, enabled with
-`git config core.hooksPath .githooks`) that runs the fast two and leaves the
-2-minute mutation job to CI.
+CI runs four jobs — `fixtures` on ubuntu, `test` on a macOS/Linux/Windows
+matrix, `protocol` (the MCP and skill suites) on ubuntu, and `mutation` on
+ubuntu.
+
+Locally there are two versioned hooks in `.githooks/`, enabled once per clone
+with `git config core.hooksPath .githooks`. `pre-commit` runs `fixtures.mjs
+--check` (~0.1s) then `smoke.mjs` (~4s); `pre-push` additionally runs `mcp.mjs`
+and `skill.mjs`. The mutation check is in neither — it copies the tree and
+re-runs the suite eleven times, so at ~2m it has its own CI job and is part of
+`npm run test:all`. A gate nobody can afford to run is a gate nobody runs.
+
+They are in `.githooks/` rather than `.git/hooks/` because that directory is
+untracked, so a fresh clone would otherwise arrive with no guard at all. This
+package had exactly that gap: the hooks lived only in the parent workspace, so a
+standalone clone had neither a local gate nor a claim to one. Both hooks **refuse
+rather than pass** when they cannot run — a missing `node`, an unresolvable repo
+root, or a tree with no `test/` under it are all exits 1, because a hook that
+exits 0 having checked nothing is worse than no hook.
+
+Override with `--no-verify`. That is sometimes the right answer; the fix is to
+re-run by hand before pushing, not to delete the hook.
 
 ## Writing a test
 
@@ -252,7 +268,7 @@ The generator is exported, because a project testing *its own* Mach-O reader
 needs a known-answer corpus at least as much as this one does:
 
 ```js
-import { buildFixtures } from 'MachO-Tools/fixtures';
+import { buildFixtures } from 'macho-tools/fixtures';
 
 const { files, manifest } = await buildFixtures({ out: '/tmp/corpus' });
 // files.universal, files.arm64only, files.decoy, files.stripped, files.thin…

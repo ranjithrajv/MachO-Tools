@@ -1,5 +1,5 @@
 {
-  "name": "MachO-Tools",
+  "name": "macho-tools",
   "version": "0.1.0",
   "type": "module",
   "description": "Mach-O binary introspection for Apple binaries: fat headers, symbol search, vaddr lookup, address-to-offset mapping, direct-call xrefs and byte-literal search. Zero dependencies, no build step — and it reads Mac binaries from Linux or Windows.",
@@ -73,7 +73,8 @@
     "test:mutation": "node test/mutation-check.mjs",
     "test:mcp": "node test/mcp.mjs",
     "test:skill": "node test/skill.mjs",
-    "test:all": "npm run test:fixtures && npm test && npm run test:mcp && npm run test:skill && npm run test:mutation"
+    "test:publish": "node test/publish.mjs",
+    "test:all": "npm run test:fixtures && npm test && npm run test:mcp && npm run test:skill && npm run test:publish && npm run test:mutation"
   },
   "engines": {
     "node": ">=22.15"

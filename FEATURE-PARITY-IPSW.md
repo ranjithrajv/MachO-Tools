@@ -263,7 +263,7 @@ not the other is not a contract.
 |---|---|---|
 | Stars | **3,769** | 0 |
 | Licence | **MIT** | LGPL-3.0 |
-| Install | Homebrew (own tap + core), snap, scoop, releases | `npm i -g` → **E404, unpublished** |
+| Install | Homebrew (own tap + core), snap, scoop, releases | `npm i -g` → **valid name, not yet published** |
 | Language runtime | Go 1.26 static binary | Node ≥ 22.15 |
 | Runtime dependencies | none, but ~40 MB binary | none, and **zero** |
 | Docs site | ✅ + Discord + DeepWiki | README only |
@@ -314,9 +314,16 @@ coverage.
 
 Two things this does **not** change. `ipsw` is still a strict superset on format
 coverage — load commands, code signing, ObjC/Swift, disassembly, dyld caches and
-firmware are all still theirs alone. And MachO-Tools is still **not
-installable**: `npm view MachO-Tools` returns E404, which is worth more than any
-row in this table and has not been addressed.
+firmware are all still theirs alone. And MachO-Tools is still **not published**.
+
+That second one has changed *why*, which is worth recording because the reason
+was invisible. `npm view MachO-Tools` returned E404, and the obvious reading was
+"not published yet". In fact it could not have been published at all: npm refuses
+a capital letter in a name published for the first time, and `validate-npm-package-name`
+reported `validForNewPackages: false`. `npm publish --dry-run` packed the tarball
+and printed `+ MachO-Tools@0.1.0` with exit 0, so the command a maintainer reaches
+for to check readiness reported success on the one thing that was broken. The name
+is now `macho-tools`, and `test/publish.mjs` asserts the property in CI.
 
 ---
 
@@ -584,9 +591,10 @@ right. Nothing in the MCP or skill work moved that line, and nothing should.
 Two things are worth saying out loud rather than leaving in a table where they
 lose. **The MCP server and the skill are distribution, not differentiation** —
 `ipsw` has a skill today, Hopper and Binary Ninja have servers, and by the time
-this was written that made all three table stakes. And **none of it counts if
-the package is not installable**: `npm view MachO-Tools` still returns E404,
-which is worth more than every row in this document combined.
+this was written that made all three table stakes. And **none of it counts while
+the package is unpublished**: `npm view macho-tools` still returns E404, which is
+worth more than every row in this document combined. The name is now valid and the
+check is in CI, so this is the last blocker rather than a permanent one.
 
 The one row worth defending loudest is still `findcall`, because `ipsw` has no
 answer for it at all — and the second is now the zero-fill and ambiguity

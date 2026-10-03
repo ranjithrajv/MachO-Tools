@@ -46,7 +46,7 @@ Eight tools; there were seven until `symgrep.mjs` and `symfind.mjs` merged into
 ### Installing
 
 ```sh
-npm install -g MachO-Tools          # macho-describe, macho-sym, ...
+npm install -g macho-tools          # macho-describe, macho-sym, ...
 man macho-sym
 ```
 
@@ -391,7 +391,7 @@ every agent-driven workflow while being well suited to it. See
 [`COMPETITIVE-LANDSCAPE.md`](COMPETITIVE-LANDSCAPE.md).
 
 ```js
-import { describe, findCalls, lookupAddress, mapLiteral } from 'MachO-Tools';
+import { describe, findCalls, lookupAddress, mapLiteral } from 'macho-tools';
 
 const { slices } = describe('/path/to/binary');
 const fn = lookupAddress('/path/to/binary', 0x100085c30n);
@@ -399,9 +399,16 @@ const callers = findCalls('/path/to/binary', fn.start);
 const tables = mapLiteral('/path/to/binary', 'LZ4');
 ```
 
-The specifier is `MachO-Tools`, exactly as `"name"` spells it in `package.json` —
-package names are case-sensitive when Node resolves them, and `mach-o-tools` is a
-different, uninstalled package.
+The specifier is `macho-tools`, exactly as `"name"` spells it in `package.json` —
+package names are case-sensitive when Node resolves them.
+
+The name is lowercase because npm will not accept a capital letter in a name
+published for the first time. That was not a style choice: this package shipped
+as `MachO-Tools`, and `npm publish --dry-run` reported `+ MachO-Tools@0.1.0` and
+exited 0 on it, because a dry run never asks the registry whether a name is
+acceptable. `npm view` returned E404 with the reason spelled out — *"name can no
+longer contain capital letters"* — and npm's own validator reported
+`validForNewPackages: false`. The command that looks like the check was not one.
 
 | Export | Returns |
 |---|---|
@@ -493,7 +500,21 @@ mutation failing the run rather than counting as caught.
 
 **A green `npm run test:all` is also a complete rot check** — the fixtures pin
 exact addresses and counts, so a new toolchain release cannot silently change
-what the readers do. CI runs all three jobs on macOS, Linux and Windows.
+what the readers do. CI runs four jobs, with the reader suite on macOS, Linux and
+Windows.
+
+Two of them also run before you commit. Clone once and enable the versioned
+hooks:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+`pre-commit` runs the corpus check and the reader suite; `pre-push` adds the
+protocol and skill suites. The mutation check is in neither, because ~2m on every
+commit is how a fast gate stops being run — it stays in CI and in `test:all`.
+Both hooks **refuse rather than pass** when they cannot run, so a clone without
+`node` on `PATH` is told so instead of reporting a green it did not earn.
 
 `CONTRIBUTING.md` has the detail: what each check establishes, why the suite runs
 against two corpora, and the four defects in this project's own history that a

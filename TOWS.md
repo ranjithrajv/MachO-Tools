@@ -3,7 +3,8 @@
 A strategic view of the project, derived from what the code and test suite
 actually do today rather than from an aspirational description. Every claim
 below is checkable against the repository, and the numbers were re-derived by
-running the suites on 2026-10-02.
+running the suites on 2026-10-03 against `a87991e` ("Surface sections, load
+commands and UUID; reject unknown flags; extract strings").
 
 TOWS is SWOT with the action step: the four factor lists are the inputs, and the
 matrix is the output — pairing each internal factor with each external one to
@@ -12,18 +13,46 @@ nothing about what to do on Monday.
 
 ## Corrections to the previous version
 
-This document previously contradicted the tree on six points. All are fixed
-below, and each is worth naming because the stale version was more confident
-than it was correct.
+The previous version of this document was written on 2026-10-02 against an
+older tree. It was wrong in eight places, and two of them inverted the agenda.
+All are fixed below, and each is worth naming because the stale version was more
+confident than it was correct.
 
-| Stale claim | Reality |
+| Stale claim | Reality on `a87991e` |
 |---|---|
-| MIT, no CLA | **LGPL-3.0-or-later** (`package.json`, `README.md` §Licence). The three *sibling* packages are MIT; this one deliberately is not. |
-| "Two tests do not bite"; of four mutations two were inconclusive | **7 mutations, 7 caught.** The three harness defects were fixed. |
-| "62 checks" over five system binaries including Ollama | **202 checks.** The corpus is 7 generated fixtures plus 5 system-binary *candidates* (`/usr/bin/true`, `/usr/bin/ssh`, `/bin/ls`, a Go toolchain, ffmpeg), of which whichever exist are used. Ollama is still referenced, but as an optional **`.app` bundle** probe, not a binary. |
-| "Not publishable as configured": `private: true`, no `repository`/`author` | Metadata is complete — repository, bugs, homepage, author, `exports`, `types`, `files`. No `private`. |
-| "macOS only" | **Verified on macOS and Linux**; Windows exercises the fixtures half only. |
-| "Publish provenance deliberately — every claim in `NOTICE.md`" | **Resolved as a `README.md` §Provenance, not a `NOTICE.md`, and the reason is now written down rather than left as a mismatch against three siblings.** The correction holds: there is still no `NOTICE.md` here. What changed is that this is now a decision with a stated rationale instead of an unclaimed gap — see S5. |
+| **"Publishable as configured"** — "complete manifest metadata; nothing blocking an `npm publish`" | **Unpublishable under its current name.** npm's own validator returns `validForNewPackages: false` with the warning *"name can no longer contain capital letters"*, and the registry repeats it verbatim in the E404. The metadata is complete; the *name* is invalid. |
+| **"Installable, not just vendorable"** — "`man macho-sym` works after `npm i -g`" | Never was, and cannot be. `README.md`:49 still instructs `npm install -g MachO-Tools`, which cannot succeed. `macho-tools` is also E404, so the name is unclaimed and free. |
+| `W1` **"LANDED, both halves"** — `.githooks/pre-commit` "verified to *block* on a hand-edited fixture and on a failing suite" | **There was no `.githooks/` in this repository.** It lived at the workspace root; `core.hooksPath` was unset here and nothing was tracked. `CONTRIBUTING.md` was *correct* — it said "in the parent workspace" — so the code review caught what the strategic document did not. The local gate had not travelled with the package when it became its own repo. **Now closed:** both hooks are versioned here and blocking-verified. |
+| "202 checks" | **310** in `smoke.mjs`, plus **183** in `mcp.mjs` and **36** in `skill.mjs` — **529 checks**, and 11 mutations. |
+| "7 mutations, 7 caught" | **11 mutations, 11 caught** (9 by the generator's self-check, 2 by `smoke.mjs`). The latest commit message says *9*, so that claim is stale too, in the commit that introduced the two extra mutations. |
+| "7 generated fixtures (39,568 bytes)" | **10 fixtures, 42,060 bytes** — `bits32.macho` and `strings.mjs`'s `strings.macho` joined, and an `LC_UUID` was added to `stripped.macho`. |
+| "Six man pages", "six flat binaries" | **Nine man pages, nine `bin` entries** — eight CLI tools plus `macho-mcp`. |
+| "CI is three jobs" | **Four** (`fixtures`, `test`, `protocol`, `mutation`), and only `test` is an OS matrix. `README.md` and `CONTRIBUTING.md` *both said three* until this pass corrected them. |
+
+### Corrections, third pass
+
+Two failures surfaced while writing the hooks, both in the guard rather than in
+the code it guards — which is where the risk actually was:
+
+1. *A flag-parsing regex in the first draft of the hook silently matched
+   nothing.* It was meant to catch a `README.md` install line naming a different
+   package than `package.json`, and it returned **no matches at all** on the very
+   line it was written for, because `(?:-[^ ]+)*` sits after a mandatory space and
+   so matches zero times against `npm install -g X`. A prose check that matches
+   nothing is indistinguishable from a prose check that passes. It was rewritten
+   as a check in `test/skill.mjs` — the suite that already holds prose to the
+   tree — rather than kept as a regex inside a shell hook, which is the wrong
+   place for a parser that has no positive control.
+2. *The hooks resolved the git root before checking for `node`.* On a `PATH`
+   without `node`, the hook died on `git` with exit 127 and no message. It still
+   refused, so it was not a false green — but the likely cause went unnamed, and
+   the fix is a two-line reorder found only by testing the failure rather than
+   assuming it. The current hooks name the *actual* missing thing in both cases.
+
+Both are the same shape as everything else in this document: **a verification
+that cannot fail, or cannot explain itself, is worse than a missing one.** The
+third and fourth are the first two in this project where the defect was in the
+check's own text rather than in the reader it checked.
 
 ### Corrections, second pass
 
@@ -31,42 +60,57 @@ Recorded rather than quietly deleted, because a strategic document that is only
 ever right about the present is indistinguishable from one that was never
 checked.
 
-**The "No CI" weakness was false, and it had inverted the agenda.** The
-workflow exists and passes. §Reading named `W1` as *the agenda* on the premise
-that "everything strategic is gated on the suite running unattended" — sound
-reasoning aimed at a premise that was not true. The suite does run unattended.
-What remained was the half of `W1` that had not landed, which is now in.
+**`api.d.ts` was no longer "deliberately narrower than the implementation". It
+was stale.** That narrower-by-design stance was listed as a strength, and it was
+right at the time: a hand-written `.d.ts` describes what the package *promises*,
+not what the code happens to do. But the commit that added `segments`,
+`sections`, `loadCommands`, `uuid` and the `findStrings` export **did not touch
+`src/api.d.ts`**. Verified against the running code:
 
-**The document also contradicted itself on the corpus size** — "5 system-binary
-candidates" in the corrections table and "4 system binaries" in Strengths, two
-sections apart. There are five candidates; how many are *used* is machine-
-dependent, which is itself the point of `W3`.
+```
+describe('test/fixtures/universal.macho').slices[0]
+  → arch, offset, size, thin, readable, bits, nsyms, defined, note,
+    textAddr, textSize, codeSections, segments, sections, loadCommands, uuid
 
-**Two real defects surfaced while implementing `W1`, both in the verification
-path rather than in the readers** — which is where the risk actually was:
+api.mjs exports 19 symbols; api.d.ts did not declare findStrings.
+```
 
-1. *The shipped-file list was hardcoded.* The boundary check guarded "no
-   application is named in what the package ships" using a literal three-file
-   list, while `files` shipped nine entries. It was scanning **16 files where 31
-   ship** — including all six man pages, both completion sets and `COPYING`. This
-   is the project's central claim, and the check guarding it had quietly stopped
-   matching, which is the precise failure it exists to prevent. Found while
-   shipping the fixture corpus, because that change made the drift visible.
-2. *A symlinked invocation ran nothing and exited 0.* Making the generator
-   importable introduced an `import.meta.url` entry-point guard. npm installs a
-   local dependency as a symlink, and Node resolves `import.meta.url` while
-   `argv[1]` still holds the linked path — so the guard concluded "imported",
-   the work never ran, and `--check` on a **drifted corpus passed without reading
-   a byte**. Fixed by realpathing both sides; verified to exit 1 on drift through
-   a symlink, and verified that a genuine import is still silent.
+A TypeScript consumer calling `slice.sections` got a compile error against a
+field that demonstrably exists at runtime. That is not narrower-by-design, it is
+a contract break — and commit `4115f08` was titled *"fix four contract
+breaks"*, so the bar this project set for itself is the one being missed. Both
+halves are now landed, and the gap is closed by a suite rather than by a review
+(see *Corrections, third pass*).
 
-Both are the same shape as the three the README already records. That is four
-distinct routes to a confident green, and the reason the rule is stated as a rule
-rather than as a habit: **a verification that cannot fail is worse than a missing
-one, because it reports success.**
+**The provenance pointer now dead-ends at the existential risk.**
+`README.md`:486 sends the reader to "the sibling project's `NOTICE.md` — reach it
+from the repository root rather than by link here". The repository root *is*
+this repository now. There is no `NOTICE.md` here. The one document whose entire
+job is managing how the project's origin is perceived, points at a file that
+does not exist, in the one direction a reviewer will actually follow. Everything
+else in §Provenance is right — nothing proprietary ships, and that is enforced by
+five `boundary:` checks over 44 shipped files — but the disclosure a sceptical
+reader is asked to go read is unreachable.
 
-The old document also recommended DWARF as the single highest-value next step.
-That contradicts this project's stated strategy — see `W-note` in the matrix.
+**Two more confident greens, in the same shape as the four the project already
+records in its README:**
+
+1. **`npm publish --dry-run` succeeds.** It packs 54 files, prints
+   `+ MachO-Tools@0.1.0`, and exits 0. It never asks the registry whether the
+   name is acceptable, because a dry run is not a publish. The green is real and
+   the conclusion it supports is false — the fifth instance of the exact failure
+   this project has written four times about, reached by the shortest route.
+2. **The mutation count in the commit message is stale.** `9 mutations, all
+   caught; 8 by the generator's own self-check, 2 by smoke` — that is 10, not 9.
+   The suite actually runs **11, all caught**. A commit message is the one piece
+   of documentation nobody re-reads, which is presumably why it drifted while
+   every checked-in claim stayed true.
+
+The rule still holds, and this pass is the argument for it: **a verification that
+cannot fail is worse than a missing one, because it reports success.** Three of
+the four defects the README records were found by *doing* the matrix items. The
+same is true of every finding above except the `.githooks` gap, which was found
+by reading the tree against the previous version of this document.
 
 ---
 
@@ -76,59 +120,60 @@ That contradicts this project's stated strategy — see `W-note` in the matrix.
 
 | | Evidence |
 |---|---|
-| **Zero dependencies, zero build step** | Node builtins only; `npm test` works on a clean clone with no install. `.gitignore` goes further and treats a `node_modules/` directory as a bug. |
-| **No product knowledge** | No game, publisher, save file or proprietary format in `src/` or `test/`. Now **enforced**, not merely verified — see W5. The only product-adjacent string is `LZ4`, used as an illustrative needle in the `findliteral` usage text and the same way in a test — a generic compression library, not a product fact. |
-| **One reader, not seven** | `src/macho.mjs` owns fat headers, load commands, `LC_SYMTAB` and sections. Duplication was the root cause of a real defect: `mapliteral` hardcoded `cputype === 0x01000007` and threw on any Apple-silicon-native build. |
-| **Two corpora with opposite assertion policies** | 7 generated fixtures (39,568 bytes, built by `test/fixtures.mjs`, asserted with *exact* counts and addresses) plus 4 system binaries (asserted against *invariants* only, pinning no counts because they move with a compiler release). This is the fix for "every verdict depended on what happened to be installed". |
-| **Mutation testing, and it bites** | `test/mutation-check.mjs` reintroduces each historical defect into a copy of the tree. Latest run: **7 mutations, 7 caught.** Six of the seven are detected by the fixture generator's own self-check, independent of `smoke.mjs`. An *inconclusive* mutation now fails the run — a stale anchor previously exited 0 and shrank the count in silence. |
-| **The suite verifies its own coverage** | It asserts that both architectures were exercised, that a symbol-less and a populated binary were both tested, and that every input shape a known defect needs was present. A test that silently skips half the input space and reports success is worse than no test. |
-| **Both architectures decoded** | x86_64 `rel32` and arm64 `BL`, with an explicit `unsupported` list rather than a silent zero. |
-| **Typed call scanning** | Code-sections-only by default, `--include-data` to widen, and `decoy.macho` plants a decoy call in data specifically so the filter is proven rather than asserted. |
-| **A real public surface** | Every tool takes `--json`; `src/api.mjs` is importable; `api.d.ts` is hand-written and deliberately *narrower* than the implementation, because inferred types describe what the code happens to do rather than what it promises. Addresses are `bigint` end to end. |
-| **Honest about itself** | A table of its own seven historical bugs, a comparison table against five named alternatives, and a Limits section that states the gaps rather than leaving them to be discovered. |
-| **Publishable as configured** | Complete manifest metadata; nothing blocking an `npm publish`. |
-| **Installable, not just vendorable** | Six man pages and shell completions for bash and zsh, all in `files`. `man macho-sym` works after `npm i -g`. |
+| **Zero dependencies, zero build step** | Node builtins only; `node_modules/` is absent and `.gitignore` treats its appearance as a bug. Re-verified today: five suites run on a clean clone with no install. |
+| **No product knowledge, and it is a test rather than a review habit** | Five `boundary:` checks in `smoke.mjs`, all passing, scanning 16 files in the reader, 5 in the suite and **44 in what the package ships** — with a positive control (`the name check can actually fail — 3 patterns, all live`) and a derivation from `package.json`'s own `files` rather than a restated list. |
+| **One reader, not nine** | `src/macho.mjs` owns fat headers, load commands, `LC_SYMTAB`, sections, `LC_UUID` and the 32/64-bit split. Duplication has shipped a real defect twice — the `mapliteral` cputype constant, and the section attribute predicate the latest commit deleted in favour of calling `isCodeSection`. |
+| **Two corpora with opposite assertion policies** | 10 generated fixtures (42,060 bytes, exact counts and addresses) plus the system binaries present on the machine, asserted against *invariants* only. This is what makes a green run mean something on a bare CI runner. |
+| **Mutation testing, and it bites** | Latest run: **11 mutations, 11 caught**, 9 of them by the fixture generator's own self-check. An inconclusive mutation fails the run. Every one of the eleven reintroduces a real historical bug. |
+| **The suite verifies its own coverage** | It asserts both architectures were exercised, that a symbol-less and a populated binary were both tested, and that every input shape a known defect needs was present. |
+| **The 32-bit path is no longer untested** | The previous version could not claim this: every fixture was 64-bit, so `if (wide)` meant the branch had never run. `bits32.macho` now pins it, and the nlist stride bug — which returned the right *number* of symbols one entry off, with names that looked like names — is mutation-locked. |
+| **The loader surface is now visible** | `describe` carries `segments`, `sections`, `loadCommands` and `uuid`; unknown load commands are reported by number rather than dropped. Named, not interpreted — `LC_CODE_SIGNATURE` is a fact about a file. |
+| **One dialect across every tool** | `rejectUnknownFlags()` gives all eight CLI tools the same usage-error behaviour, names a near miss, and a check asserts all sixteen documented flag combinations still parse. A typo'd `--regex` used to answer a different question and report a negative answer to it. |
+| **`--json` everywhere; an importable API; a protocol and a skill** | 19 exports from `src/api.mjs`, `bigint` addresses end to end, a real MCP server driven over a real pipe by 183 checks that parse every stdout line, and an agent skill held to the tree by 36 checks. |
+| **Honest about itself** | A table of its own historical bugs, a comparison table with honest `no` rows, a "What it will not do" section *with the test for joining it*, and a Limits section that states the gaps. |
+| **CI on three operating systems** | Four jobs; the `test` job is a macOS/Linux/Windows matrix, and Windows is there for a stated reason — the reader claims platform-independence and only Windows has no `/usr/bin` to fall back on. |
 
 ### Weaknesses — internal, harmful
 
 | | Evidence |
 |---|---|
-| ~~**No CI, and not in the existing local gate**~~ — **both false, and the CI half was the load-bearing error** | **There is CI.** `.github/workflows/test.yml` is three jobs: `fixtures --check` on ubuntu, `test` on a **macos/ubuntu/windows** matrix, `mutation` on ubuntu. This weakness was stated as fact, and §Reading built the whole agenda on it — which is how a document ends up confident and wrong about the thing it exists to assess. Corrected below. |
-| **The local gate omitted this package** — **LANDED** | `.githooks/pre-commit` now runs `fixtures.mjs --check` (~0.1s) and `smoke.mjs` (~4s), with the mutation check deliberately excluded at ~2m and CI named as its home. Verified to *block* on a hand-edited fixture and on a failing suite, not merely to run. |
-| **Indirect calls are invisible** | Register calls, jumps through a PLT stub, and any indirect call do not encode their target. Largest gap against Ghidra/IDA. |
-| **No dSYM / DWARF** | 2 of 6 tools go blind on a stripped binary, and a shipped build whose symbols live in a sidecar is out of reach entirely. |
-| **No disassembly, no load-command dump, no fixups/export trie/ObjC-Swift metadata** | Deliberate, and documented as deliberate — see `W-note` and `W8`. Now also stated as a **decision** in the README ("What it will not do") rather than only as a gap in a table. |
-| **arm64 scan steps 4 bytes at a time** | Sees aligned `BL`s only; an instruction at an unaligned address is missed. |
-| **No `NOTICE.md`** — **partly addressed** | The three sibling packages each carry one. Still no standalone `NOTICE.md` here, which is the right shape: this package redistributes nothing derived from the product, so there is no asset list to publish. What it needed instead was a statement of *position*, and `README.md` §Provenance now carries one — origin, what does not ship, and that the licence does not extend to the publisher's IP. A sibling `NOTICE.md` would be a shorter restatement of that. |
-| **An absent corpus member is silent** | `smoke.mjs` prints every skipped *check* loudly (`N skipped: ...` / "a skip means the input was unavailable"), and its coverage receipt asserts the generated corpus is complete. But `discover()` drops an absent *system binary* from the candidate list without a word, so "202 passed" and "150 passed, no ffmpeg on this box" differ only in the number. The check-level honesty is in place; the corpus-level half is not. |
-| **The shipped-file list was hardcoded — LANDED** | The boundary check's "in what the package ships" group was a literal three-file list while `files` also carried `man/`, `completions/`, `LICENSE` and `COPYING`: **16 files scanned where 31 ship.** Now derived from `package.json`'s own `files`, with a check that the derivation succeeded. Found while shipping the fixture corpus, which is the sort of change that finds it. |
-| **A symlinked invocation ran nothing and exited 0 — LANDED** | The `import.meta.url` guard added to make the generator importable compared `argv[1]` to a path Node had already realpath-resolved. npm links a local dependency, so through a symlink `--check` on a **drifted corpus passed without looking at anything**. Fixed by realpathing both sides; verified to exit 1 on drift via symlink and still silent on a real import. The fourth confident-green in this project's history — see *Corrections, second pass*. |
-| **Bundle ergonomics are macOS-shaped** | `bundle.mjs` assumes `.app` / `Contents/MacOS`. Fine — that is the target — but the cross-platform story is thinner than the tests suggest. |
+| ~~**The package cannot be published under its own name**~~ — **LANDED** | Now `macho-tools`. `validate-npm-package-name` reports `validForNewPackages: true` and npm's own character rules pass; `npm view macho-tools` is E404 because it is unpublished, not because it is unpublishable. `test/publish.mjs` asserts the name, the character rules, the `files` entries, every `bin` target, every `export` subpath and `types`, and that the docs name the same package — with a positive control on the specifier pattern, because a check that matched no install line would look exactly like one that passed. It runs in CI, so the dry run can no longer be the only witness. |
+| ~~**`api.d.ts` has fallen behind the implementation**~~ — **LANDED** | The four `describe()` slice fields are declared, plus `findStrings`, `LoadCommand`, the iOS header facts (`filetype`, `platform`, `minos`, `sdk`, `cryptid`, `encrypted`), and the `Thin` fields `parseThin` actually returns. `test/types.mjs` holds the declared surface to the runtime one by reading real values off fixtures — and it earns its place: it caught nine more fields the concurrent work in `src/api.mjs` had added without touching the `.d.ts`. See *Corrections, third pass*. |
+| ~~**No local gate in this repository**~~ — **LANDED** | `.githooks/pre-commit` (`fixtures.mjs --check` ~0.1s, then `smoke.mjs` ~4s) and `.githooks/pre-push` (adds `mcp.mjs`, `skill.mjs`), enabled with `git config core.hooksPath .githooks`. Verified to **block**, not merely run: a hand-edited fixture refuses a real `git commit`, with the corpus message and no commit created; a `uuid`-dropping mutation passes `fixtures --check` and is still caught by `smoke.mjs`, so the two checks were isolated from each other rather than one masking the other. Both hooks refuse with exit 1 rather than exit 0 when they cannot run — missing `node`, unresolvable root, or a tree with no `test/`. That last property was found *by* testing: the first version resolved the git root before checking for `node`, so a stripped `PATH` died on `git` with exit 127 and no explanation. Still a refusal, but an unreadable one. |
+| ~~**The CI description is wrong in both documents that describe it**~~ — **LANDED** | Both corrected: `README.md` §Verify and `CONTRIBUTING.md` now say four jobs, name `test` and `protocol`, and state that only the reader suite is a three-OS matrix. The section telling you how to verify the README can now be trusted on that point. |
+| **An absent corpus member is still silent** | `discover()` drops a missing system binary with a bare `continue` and no word. The suite prints every skipped *check* loudly and its coverage receipt is thorough; the corpus-level half of the same honesty is still missing. Unchanged from the previous version and still open. |
+| **The provenance pointer is unreachable** | `README.md`:486 refers the reader to a `NOTICE.md` "from the repository root". There isn't one here. |
+| **No tags, no releases, version `0.1.0`** | `git tag` is empty and `get_latest_release` 404s. The version has never been published or cut, so the artifact a badge vouches for has no version anyone can name. |
+| **Indirect calls are invisible** | Register calls, jumps through a PLT stub, and any indirect call do not encode their target. Largest gap against Ghidra/IDA, and a permanent one by decision. |
+| **The arm64 scan steps 4 bytes at a time** | Sees aligned `BL`s only; an instruction at an unaligned address is missed. |
+| **No disassembly, no fixups, no export trie, no ObjC/Swift metadata, no DWARF** | Deliberate, and documented as deliberate with a stated test. Unchanged — see `W-note`. |
+| **Bundle ergonomics are macOS-shaped** | `bundle.mjs` assumes `.app` / `Contents/MacOS`. Fine — that is the target — but the cross-platform story is thinner than a three-OS matrix suggests. |
 
 ### Opportunities — external, helpful
 
 | | |
 |---|---|
+| **The obvious name is unclaimed** | `macho-tools` returns E404 and is free. So is the decision — nothing about the tooling changes, only the string in `package.json`. |
+| **An agent-integration surface no Mach-O tool has** | The parity comparison puts `ipsw` at *skill only*. A tested MCP server plus a tested skill is a category of its own, and the fixture corpus means it can be exercised with no binary and no network. |
+| **The fixture corpus is independently useful** | A deterministic Mach-O corpus with known answers — 32-bit, fat, symbol-less, populated, zero-fill, string-bearing — exported as `MachO-Tools/fixtures` and consumable by another project's parser tests. This is the artefact a different project borrows. |
 | **Stable format, thin tooling** | Mach-O has barely changed in 30 years. `otool`/`nm` ship in the box but need `lipo` first, emit no JSON, and answer one question per invocation. |
-| **A query interface is the gap readers have** | MachOKit and machofile parse far more; neither lets you *ask*. This project's one differentiator. |
-| **Linux/Windows against Mac binaries** | `nm` and `otool` do not run off macOS at all. CI and server-side triage are unserved by the in-box tools. |
+| **Linux/Windows against Mac binaries** | `nm` and `otool` do not run off macOS at all. Server-side triage and CI are unserved by the in-box tools. |
 | **Large universal binaries** | `nm` on a 476 MB universal binary takes minutes; this reads the symbol table directly. |
-| **The fixture generator is independently useful** | A deterministic, in-repo Mach-O corpus with known answers is a contribution to *other* projects' parser tests, not just to this one. |
-| **Security and malware triage** | Incident response wants byte-level facts, not a GUI, and the README already names `machofile`'s malware-analysis lineage. |
-| **The bug table is publishable on its own** | "Seven ways to read a fat binary wrong" stands as a write-up regardless of which toolkit reads them. |
-| **AI and automated analysis** | A dependency-free parser with `--json` on every tool and an importable API is shaped for pipeline use. |
+| **Security and malware triage** | Incident response wants byte-level facts, not a GUI. |
+| **The defect history is publishable on its own** | Eleven mutation-locked bugs, including a 32-bit nlist stride that returned plausible names, is a write-up regardless of which toolkit reads them. |
+| **A verifiable green is a marketing asset** | 529 checks and 11 mutations, reproducible offline in about five seconds by a stranger. That is rarer than it sounds and it is already built. |
 
 ### Threats — external, harmful
 
 | | |
 |---|---|
-| **Provenance and IP optics** | Extracted from reverse-engineering a commercial product. The code is clean of it; the lineage is knowable. **LGPL does not license the publisher's IP.** This is the only threat that can end the project. |
-| **The workspace's provenance apparatus does not cover this package** — **partly addressed** | The sibling projects exclude key material by four enforced boundaries — gitignored, `prepack`-excluded, `NEVER_VENDOR`, and untracked-stripped-from-history — with a secret-scan and a pre-push hook. **Much of that machinery does not apply here, and saying so is stronger than copying it:** this package has no decoder, reads no key file, writes no derived data, and has nothing to exclude. What it needed was a claim it could *prove*, and W5 is that — the no-product-knowledge boundary is now a test, not a review habit. The position is stated in `README.md` §Provenance. The root `LICENSE` no longer implies the MIT grant reaches this directory. |
+| **Provenance and IP optics** | Written while reversing a commercial product. The code is clean of it and that is now enforced; the lineage is knowable. **LGPL does not license the publisher's IP.** The only threat that can end the project — and the one document that manages it currently points readers at a file that is not there. |
+| **Zero adoption from an unpublishable name** | The pitch is *"install it and read `man`"*. Until the name is valid, every reader who takes the README at its word gets a 404. `FEATURE-PARITY-IPSW.md` calls this "worth more than any row in this table and has not been addressed" — and it was written before the reason was known. |
 | **Better-funded incumbents** | Ghidra is free with no licence server, which removes the usual objection to it. Hopper, Binary Ninja, LIEF, MachOKit. |
 | **Abandonment** | One maintainer, no institutional home. The most likely way this ends is by not being continued. |
-| **Silent rot against toolchain releases** | The invariant-only policy for system binaries is *correct* and also means nothing forces an update. **Mostly retired:** CI runs the `fixtures --check` job, which re-derives all 39,568 bytes of the corpus, so a toolchain change that alters the readers fails the run rather than passing quietly. |
-| **No discoverability** | **Partly addressed:** a CI badge is now in the README. Still no docs site, and six flat binaries. |
-| **Conflation with the sibling `tools/` package** | The workspace-level "no product knowledge" guarantee is true of this package in isolation and easy to overstate. |
+| **Silent rot against toolchain releases** | Largely retired: the `fixtures --check` job re-derives all 42,060 bytes, so a toolchain change that alters the readers fails the run rather than passing quietly. What is *not* pinned is the system-binary half, by design. |
+| **No discoverability** | A CI badge, a public repo, no releases, no docs site, nine flat binaries. |
+| **Conflation with the sibling `tools/` package** | The workspace-level "no product knowledge" guarantee is true of this package in isolation and easy to overstate from the outside. |
 
 ---
 
@@ -137,57 +182,61 @@ That contradicts this project's stated strategy — see `W-note` in the matrix.
 |  | **Opportunities** | **Threats** |
 |---|---|---|
 | **Strengths** | **SO — build** | **ST — defend** |
-| Two corpora, 202 checks, 7/7 mutations | **S1. LANDED.** The verification claim is now the README's second section, above "when to use this": a `git clone` and three commands, with each number labelled by *what kind of evidence it is* — corpus integrity, working on unknown binaries, and tests that would notice. Wall-clock timings are given as approximate on purpose, because they are machine-dependent and a suite that pins them fails for the wrong reason. A CI badge sits above it. | **S5. LANDED, in the shape this package needs.** No `NOTICE.md`: there is no derived asset to publish here, so the sibling's shape does not fit. `README.md` §Provenance instead states origin, what does not ship (nothing — and now *enforced*, see W5), and that LGPL does not license the publisher's IP. The root `LICENSE` says the same, so neither reader is misled about which grant applies. |
-| One tested reader, no product knowledge | **S2. LANDED.** `test/fixtures.mjs` is now `MachO-Tools/fixtures`, exporting `buildFixtures({ out, check })`, with `test/fixtures.mjs` and the six `.macho` files added to `files`. Verified from a real `npm install`: the subpath resolves, the corpus builds into a consumer's directory, all six read back cleanly through the consumer's own reader, and `--check` still guards a shipped corpus. Importing has no side effects, which is why `main` sits behind an entry-point guard — see the symlink defect in *Corrections, second pass*. | **S6. Let the in-tree corpus be the rot detector.** Fixtures pin exact answers, so a toolchain change cannot silently break the parsers. A green `npm run test:all` from a clean clone is a complete rot check with no setup. |
-| Zero dependencies; LGPL | **S3. LANDED.** "One file, no supply chain" is now a README subsection under the library docs, with the claim *verified rather than asserted*: `src/macho.mjs` was copied alone into an empty directory and used to parse `/usr/bin/ssh` and a fixture fat binary with no `node_modules` and no `package.json` present. `src/macho.mjs` + `src/api.mjs` is the entire importable surface, and that is stated rather than left to be discovered. | **S7. Keep the bug table and the comparison table as the credibility surface.** Seven documented failure modes and five named alternatives with honest `no` rows are a moat against "just use Ghidra". |
-| `--json` everywhere; importable API | **S4. Make the JSON/API surface the front door for automated analysis.** Composable answers beat a terminal, and this is the differentiator no in-box tool has. | **S8. Freeze rather than rot.** The fixture suite means an archived repo can still demonstrate a working, verified state. |
+| 529 checks, 11 mutations, 4 CI jobs, 10 fixtures | **S1. Fix the name — LANDED.** `"name": "macho-tools"`. Every other asset in this project — nine man pages, ten completions, the fixture corpus, the MCP server, the agent skill — was already built and waiting for a channel that would accept it. `npm publish --dry-run` had been reporting `+ MachO-Tools@0.1.0` and exit 0 on the name npm refuses, so `test/publish.mjs` now asserts the property directly, in CI. | | **S5. Fix the provenance pointer before anything else ships.** §Provenance's job is to be followed by exactly the reader who is looking for a reason to stop trusting the project, and it currently dead-ends. The disclosure should live *in this repository*, not one level up in a workspace a standalone clone does not contain. Everything else in that section is right and is enforced; only the destination is broken. |
+| One reader; both architectures; 32-bit now covered | **S2. Make the load-command surface a capability claim.** Sections, segments, named load commands and UUID were read but not surfaced, and are now surfaced. That is a real narrowing of the gap to `ipsw` on a format this project already owns — worth stating as a row won rather than as a bug fix. | **S6. Keep the five `boundary:` checks as the provenance proof.** A claim that nothing proprietary ships is worth nothing unverified; it is currently verified over 44 published files with a positive control. This is the single strongest answer to the existential threat and it must not be traded away for coverage. |
+| Zero dependencies; one-file reader; LGPL | **S3. Publish the reader, not just the package.** `src/macho.mjs` alone parses real binaries with no `node_modules`, no lockfile and no install. That is the artefact that survives a hostile network, a supply-chain incident or a reader who will never run npm — and it needs no valid package name to be useful. | **S7. Freeze rather than rot.** With an exact-answer corpus, an archived repo can still demonstrate a verified working state to anyone who arrives later. |
+| `--json`, MCP server, agent skill, importable API | **S4. Keep the agent surface first-class.** 183 protocol checks over a real pipe and 36 checks holding the skill to the tree is a stronger claim than the format coverage, and `ipsw` has no MCP server at all. | **S8. Publish the bug table.** Eleven mutation-locked defects with the reasoning attached is the credibility surface against "just use Ghidra". |
 | | | |
 | **Weaknesses** | **WO — fix** | **WT — contain** |
-| No CI, not in the existing gate — **both LANDED** | **W1. LANDED, both halves.** (a) `.githooks/pre-commit` runs `fixtures.mjs --check` then `smoke.mjs`, with the mutation check excluded at ~2m and CI named as its home; verified to *block* on a hand-edited fixture and on a failing suite. (b) The remote runner arrived first and went further than asked: `.github/workflows/test.yml`, three jobs, macOS + Linux + **Windows**. | **W5. Enforce the format-only boundary in the gate, not by intent — LANDED.** Now four `boundary:` checks in `smoke.mjs`, so it runs in `npm test` and on all three CI platforms rather than only on local commits. Scope is `src/`, `test/` and what `files` ships; `TOWS.md` is deliberately excluded, because the provenance assessment has to name what it assesses to be worth anything. Two ways it could have been a check that passes on nothing were found and closed while writing it — a denylist whose patterns go dead, and a walker that silently skipped top-level files because `readdirSync` throws `ENOTDIR` on them. Hence the positive control and the printed file count per group. |
-| Overlapping tools; no man pages — **done** | **W2. LANDED.** `symgrep`/`symfind` merged into one `macho-sym` with `--regex` / `--all-imp` / `--no-dedupe`, on a single `searchSymbols` primitive; six man pages and shell completions for bash and zsh now ship in `files`. The old names were removed, not aliased. | **W6. Pin the mutation gate in CI — and treat an inconclusive mutation as a failure.** An inconclusive mutation used to exit 0, so a stale anchor silently reduced the mutation count while the run still printed "none surviving". That is the same confident-green failure the README records twice already, reached a third way. A surviving mutation is the single most informative signal this project can emit; so is a gate that stopped running. |
-| Absent corpus member is silent | **W3. Name the absent system binaries.** Skipped *checks* are already reported honestly; an absent *target* is not. Printing which candidates were missing turns a machine-dependent count into a self-describing one. | **W7. Keep Limits above the fold.** The README already does this well; a reviewer reads the top of the file and nothing below it. |
-| | | **W8. LANDED, as a decision rather than a gap.** `README.md` carries **What it will not do**, between the comparison table and Limits: disassembly, indirect/PLT resolution, dSYM/DWARF, ObjC/Swift metadata, ELF/PE, code signing and fixups — each with the reason, and a stated test for anything that would join the list. The test is not "is it hard"; indirect resolution is genuinely hard, which is why it stays out. The test is whether closing the gap would make the package *worse at the thing it is for*. DWARF is called out by name as a strategy change disguised as a feature. |
+| Name invalid; `api.d.ts` stale; no local gate; CI mis-documented — **all LANDED** | **W1. Reopen the agent-consumability contract — LANDED, and then kept open by a suite.** The four `describe()` slice fields, `findStrings`, `LoadCommand`, the iOS header facts and the `Thin` fields are declared. What closes it permanently is `test/types.mjs`: it reads real values off fixtures and requires each declared, so the `.d.ts` cannot go stale again without CI going red. That mattered immediately — it caught nine further fields added to `src/api.mjs` without touching the `.d.ts`. The package is consumable by coding agents *by design*, and this is the one place a consumer would have found out it was lying. | **W7. Add a publish-readiness check, because the dry run cannot fail — LANDED.** `npm publish --dry-run` printed `+ MachO-Tools@0.1.0` and exited 0 on an unpublishable package. `test/publish.mjs` now asserts the name against npm's rule, the character rules, that every `files` entry exists, that every `bin` target and `export` subpath and `types` resolves, and that the docs name the same package the manifest does. Two positive controls, because a specifier regex that matched nothing would look exactly like one that passed. Runs in CI, so this is the sixth instance of the project's own failure mode with a detector attached rather than a paragraph. |
+| No tags; `0.1.0` never cut; README/CONTRIBUTING CI drift — **drift LANDED** | **W2. Correct the CI description in both places. LANDED.** Four jobs, one matrix, both documents corrected. What remains is `W2b`: cut a tag, so `0.1.0` and the CI badge name an artefact a reader can fetch. | **W8. Ship the gate with the package, or drop the claim. LANDED — the first option.** `.githooks/` is now versioned here rather than living only in the parent workspace, `pre-commit` and `pre-push` are both blocking-verified, and both documents describe them. The failure mode this item was written to prevent — a strategic record claiming a local gate that does not exist in the repository a reader clones — is now closed. |
+| Absent corpus member still silent; provenance pointer unreachable | **W3. Name the absent system binaries.** One `console.log` in `discover()`. Skipped *checks* are already reported honestly; a silently dropped *target* is not, and "310 passed" and "310 passed, no ffmpeg on this box" differ only in the number. | **W9. Keep the reversal.** Do not add DWARF, disassembly or ObjC/Swift metadata. The project's own stated scope makes each of them a strategy change disguised as a feature, and `W-note` below is the argument. |
+| | **W4. Turn the version into a fact.** `0.1.0`, untagged, unreleased, with a badge vouching for it. Publishing under a valid name and cutting a tag makes the badge mean something and gives the fixture corpus a version to be pinned against by consumers. | |
 
-> **W-note — a deliberate reversal from the previous version.** That document
-> named DWARF as the single highest-value next step. This one does not, because
-> the project's own stated position contradicts it: `README.md` frames
-> disassembly, DWARF/dSYM, Objective-C/Swift metadata and code signing as *four
-> deliberate gaps* — "the ones where a general parser or a disassembler is
-> strictly better, and closing them here would mean becoming one of those
-> projects instead of this one". Adding DWARF is a strategy change disguised as
-> a feature, and it should be argued for as one. The gaps that *are* worth
-> closing — CI, tool consolidation, installation — are the ones that make this
-> the thing it intends to be.
+> **W-note — the reversal stands.** The previous version of this document, and
+> an earlier one before it, both named DWARF as the single highest-value next
+> step. Neither does. `README.md` frames disassembly, DWARF/dSYM,
+> Objective-C/Swift metadata and code signing as *deliberate gaps* — "the ones
+> where a general parser or a disassembler is strictly better, and closing them
+> here would mean becoming one of those projects instead of this one". Adding
+> DWARF is a strategy change disguised as a feature, and it should be argued for
+> as one. The gaps worth closing are the ones that make this the thing it
+> intends to be — and as of `a87991e` that list is short, short enough to fit in
+> a single commit.
 
 ---
 
 ## Reading the matrix
 
-The four SO/WO cells are the agenda, and most of it has now landed. What
-remains is smaller than the matrix suggests.
+**The agenda inverted, and that is the headline.** The previous version's top
+weakness was "no CI, not in the existing gate", and §Building was organised
+around it. CI is now four jobs on three operating systems, the local hook
+existed and was verified to block, and eleven mutations are locked. Every
+`LANDED` marker in that document was checked before being carried forward, and
+one of them — the local gate — turned out to be a workspace asset that did not
+travel with the package. **This is what re-deriving instead of re-reading looks
+like, and it is the argument for doing it every time the tree moves.**
 
-**`W1` is closed, and closing it moved the agenda rather than ending it.** The
-suite now runs in CI on three operating systems *and* in the local pre-commit
-gate. Both halves were needed: CI covers what is pushed, the hook covers the
-local loop, which is where a stale fixture actually gets committed from. The
-verification claims in the README are now true in the sense that matters — they
-are reproducible by someone who has never met the author.
+**`S1` was the whole external quadrant, and it is now open.** Not one opportunity
+on the right-hand side of this matrix could be reached by a reader who cannot
+install the package, and the blocker was one word in `package.json` that
+`npm publish --dry-run` reported as fine. What is left is `S2`: cut a tag and
+publish, so the badge and the `0.1.0` in the manifest name an artefact a reader
+can fetch. Everything else on the right-hand side is now reachable.
 
-**The most valuable outcomes were not in the matrix.** Shipping the fixture
-corpus (S2) exposed a hardcoded shipped-file list that was scanning 16 files
-where 31 ship, and making the generator importable introduced a symlink path
-where `--check` passed on a drifted corpus without reading it. Neither was a
-known weakness; both were found by *doing* the matrix items, and both are now
-closed. That is the argument for working the list rather than re-reading it.
+**`S5` and `W7` are the same item seen from two directions.** The provenance
+disclosure is unreachable and the dry run cannot fail; both are the project's own
+stated rule — *a verification that cannot fail is worse than a missing one,
+because it reports success* — arriving through channels nobody re-reads. Six
+instances now, across the flag parser, the shipped-file list, the symlinked
+entry point, the mutation anchor, the CI description, and `npm publish
+--dry-run`. The pattern is consistent enough to be worth a permanent detector
+rather than a sixth paragraph about it.
 
-**`S5` remains the most important item, and it is not engineering.** The
-project's only existential risk is how its origin is perceived, and the risk is
-lower than it looks given how clean the tree is — and materially higher if the
-disclosure stays implicit. The workspace solved this three times for its sibling
-packages. `README.md` §Provenance is the right shape for this one; a standalone
-`NOTICE.md` would be a shorter restatement of it.
-
-**`S2` was an opportunity nobody had claimed, and it is now shipped.** The
-fixture corpus is a better contribution than another CLI would have been. It is
-what makes the seven defects reproducible, it is now importable by another
-project, and it is the artefact a different project would want to borrow.
+**The most valuable outcomes were still not in the matrix.** Fixing the 32-bit
+path surfaced three defects, none of which threw; adding an `LC_UUID` to a
+fixture silently invalidated every encoded call displacement in the corpus and
+forced the generator to lay code out for the header it actually builds. Both
+were found by *doing* the work. That remains the strongest argument for working
+the list rather than re-reading it — and it is why this document was re-derived
+from a clean run rather than edited.

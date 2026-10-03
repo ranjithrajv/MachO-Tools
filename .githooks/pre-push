@@ -1,0 +1,80 @@
+#!/bin/sh
+# The gate for what leaves this machine.
+#
+# `pre-commit` checks the next commit, cheaply. This checks everything that is
+# about to become someone else's problem, so it runs the rest of the fast
+# suites: the MCP server over a real pipe, and the agent skill held to the tree.
+#
+# ENABLE IT, once per clone:
+#
+#     git config core.hooksPath .githooks
+#
+# A versioned directory rather than `.git/hooks/`, for the same reason as
+# `pre-commit`: `.git/hooks/` is untracked, so a fresh clone would arrive with
+# the guard silently missing.
+#
+# What is here and what is not, on purpose:
+#
+#   here   mcp.mjs     (~15s) — spawns the server and parses every byte it writes
+#                             to stdout, so a stray `console.log` on any code path
+#                             is a red test rather than a corrupt user session.
+#          skill.mjs   (~3s)  — holds agent-facing prose to the tree, so an
+#                             instruction cannot name a flag that does nothing or
+#                             an exit code that means something else.
+#          publish.mjs (~1s)  — asserts the package can actually be published and
+#                             that the docs name it.
+#
+#   CI     mutation-check.mjs (~2m). Not here: it copies the tree and re-runs
+#          the suite eleven times inside the copy. It has its own CI job, and
+#          pushing is a once-per-session event where 2 minutes is affordable —
+#          but a hook that runs it would be skipped often enough to stop
+#          mattering.
+#
+# The last two exist because `npm publish --dry-run` cannot do their job. It
+# packed this package, printed `+ MachO-Tools@0.1.0` and exited 0 on a name npm
+# refuses, because a dry run does not ask the registry whether a name is
+# acceptable — so the command that looks like the check reported success on the
+# one thing that was broken.
+#
+# All four are Linux-verified in CI and platform-independent by construction, so
+# running them once locally is enough to catch the failure they exist for.
+# Override with --no-verify when pushing a draft branch; the fix is to re-run
+# `npm run test:all` by hand, not to delete the hook.
+
+set -e
+
+# Same ordering rule as `pre-commit`, and for the same reason: check `node`
+# before `git`, so the likely cause of a hook that cannot run is the thing named
+# in the message.
+if ! command -v node >/dev/null 2>&1; then
+  echo "pre-push: node is not on PATH — refusing rather than passing unchecked." >&2
+  echo "          MachO-Tools needs node >= 22.15 and installs no dependencies." >&2
+  exit 1
+fi
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || {
+  echo "pre-push: could not resolve the repository root from git." >&2
+  exit 1
+}
+
+# The fixtures have to exist before the suites that read them: `test/mcp.mjs` and
+# `test/skill.mjs` expect the corpus to be built, and on a fresh clone it is
+# checked in rather than generated. `--check` is also the cheapest way to catch a
+# corpus that drifted between the last commit and this push.
+if ! node "$root/test/fixtures.mjs" --check >/dev/null 2>&1; then
+  echo "pre-push: the fixture corpus does not match its generator." >&2
+  node "$root/test/fixtures.mjs" --check >&2 || true
+  echo >&2
+  echo "Fix: 'node test/fixtures.mjs' to regenerate, and commit the result." >&2
+  exit 1
+fi
+
+for suite in mcp.mjs skill.mjs publish.mjs; do
+  if ! node "$root/test/$suite" >/dev/null 2>&1; then
+    echo "pre-push: test/$suite failed." >&2
+    node "$root/test/$suite" >&2 || true
+    exit 1
+  fi
+done
+
+exit 0

@@ -5,13 +5,42 @@
 node_modules/
 npm-debug.log*
 
+# Pack artefacts. `npm pack` writes `<name>-<version>.tgz` into the repository
+# root — verified, not assumed — and it is a build product with a version in its
+# name, so it goes stale the moment the version moves and would otherwise sit in
+# `git status` forever. It is also ~150 kB of duplicated tree.
+#
+# Worth ignoring because the publish path is the weakest part of this project's
+# story right now, so `npm pack` is likely to get run: `npm publish --dry-run`
+# prints `+ MachO-Tools@0.1.0` and exits 0 on a name npm will refuse, because a
+# dry run does not ask the registry whether a name is acceptable.
+*.tgz
+
 # Scratch from the suites. Both write only under `os.tmpdir()`, but a mutation
 # check that crashed mid-run could leave a `mutcheck-*` directory behind if the
 # temp root were redirected.
 mutcheck-*
 .tw-*
 
+# AppleDouble and resource-fork sidecars.
+#
+# Not cargo-culted from a macOS `.gitignore` template. This repository's
+# correctness argument rests on `test/fixtures/*.macho` being byte-exact, and
+# `fixtures.mjs --check` compares every byte — so a `._populated.macho` sitting
+# next to `populated.macho` is a file that is not part of the corpus but reads as
+# if it were. They appear when the tree is copied onto a non-native filesystem
+# (a Linux container, a Docker volume, a SMB share), which is also exactly how a
+# reviewer clones this to check the claims, so this is a likelier path here than
+# in an ordinary repository.
+._*
+.AppleDouble/
+.LSOverride/
+
 # Editor and OS.
 .DS_Store
 *.swp
 *~
+*.orig
+*.rej
+.idea/
+.vscode/

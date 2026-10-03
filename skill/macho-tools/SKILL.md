@@ -82,7 +82,7 @@ macho-o2a         0x85c30 -b /path/to/binary          # file offset → address
 
 ```js
 import { describe, searchSymbols, lookupAddress, findCalls,
-         listCallTargets, findLiteral, mapLiteral } from 'MachO-Tools';
+         listCallTargets, findLiteral, mapLiteral } from 'macho-tools';
 ```
 
 From a checkout with nothing installed, `node src/describe.mjs <binary>` works —
