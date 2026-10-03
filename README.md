@@ -101,6 +101,42 @@ successful exit status.
 `a2o` and `o2a` take only addresses or offsets as positionals, so their binary
 comes from `-b` like `symlookup`'s does.
 
+### A lone path is the binary, not a pattern
+
+`sym` takes a pattern and *then* a binary, so a single positional that names a
+Mach-O used to be read as the pattern. The binary then defaulted, and the tool
+answered about `/bin/ls` while saying nothing about the file that was never
+opened:
+
+```sh
+$ node src/sym.mjs /Applications/Developer.app/Contents/MacOS/Developer
+no symbol matched; a stripped binary has none to match against   # about /bin/ls
+exit=1
+```
+
+Exit 1 — "found nothing" — about a file nobody asked about. It is now a usage
+error that names what it read and what to type instead, and `--json` reports it
+as `missing-pattern` with the path in `binary`:
+
+```
+test/fixtures/populated.macho names a Mach-O, and sym takes a pattern and then a binary.
+
+  Read as a pattern it would search /bin/ls instead — a different
+  file — so this is refused rather than answered.
+
+    search it:          node src/sym.mjs <pattern> "…/populated.macho"
+```
+
+The fallback was never the defect — falling back is correct when no binary is
+given at all. It is wrong while *holding* an argument that is a binary, because
+the answer is then about a file the caller never named.
+
+**Deliberately narrow.** It fires only on a lone Mach-O or `.app` path. A pattern
+that merely looks like a path is still searched, which is why `findliteral` and
+`mapliteral` do not do this: for those a literal that is also a real file is a
+legitimate search, not a mistake. `findcall` needs no such rule — it already
+requires a hex address first.
+
 ### Zero-fill is a third answer
 
 `a2o` distinguishes three outcomes, because they are three different facts and

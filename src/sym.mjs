@@ -53,7 +53,7 @@
  * rather than an error. The slice now comes from `api.mjs`, which shares one
  * reader with the other tools.
  */
-import { requireBinary, FALLBACK_TARGET } from './target.mjs';
+import { requireBinary, binaryAt, FALLBACK_TARGET } from './target.mjs';
 import { searchSymbols } from './api.mjs';
 import { parseArgs, emitJSON, usage, count, EXIT, rejectUnknownFlags } from './output.mjs';
 
@@ -92,7 +92,40 @@ rejectUnknownFlags(
 
 if (!pattern) usage(HELP);
 
-const binary = requireBinary({ argv: opts.b || opts.binary || positional[1] });
+// A lone Mach-O path is the binary the user meant, not a pattern to search for.
+//
+// `sym` takes a pattern and *then* a binary, so `sym /path/to/Binary` read the
+// path as the pattern, fell back to a default binary, and exited 1 reporting
+// that a different file had no matching symbols. Nothing in the output named
+// the file that was never opened.
+//
+// The fallback is not the bug — falling back is right when a tool is given no
+// binary at all. The bug is falling back while holding an argument that *is* a
+// binary, because the answer is then about a file the caller never mentioned.
+// Asking before resolving is the only place that can be caught.
+const explicitBinary = opts.b || opts.binary;
+if (!explicitBinary && positional.length === 1) {
+  const named = binaryAt(positional[0]);
+  if (named) {
+    const literal = `${positional[0]}`;
+    const msg =
+      `${literal} names a Mach-O, and sym takes a pattern and then a binary.\n\n` +
+      `  Read as a pattern it would search ${FALLBACK_TARGET} instead — a different\n` +
+      `  file — so this is refused rather than answered.\n\n` +
+      `    search it:          node src/sym.mjs <pattern> ${JSON.stringify(literal)}\n` +
+      `    or name the binary: node src/sym.mjs <pattern> -b ${JSON.stringify(literal)}\n` +
+      `    to match the path as text: node src/sym.mjs ${JSON.stringify(literal)} -b <binary>`;
+    if (flags.has('json')) {
+      // Emitted, because this tool already emits for `bad-pattern` above and a
+      // caller piping `--json` should not have to parse prose to learn that the
+      // invocation was wrong.
+      emitJSON({ tool: 'sym', binary: named, ok: false, errors: ['missing-pattern'], messages: [msg] }, EXIT.usage);
+    }
+    usage([...HELP, '', msg]);
+  }
+}
+
+const binary = requireBinary({ argv: explicitBinary || positional[1] });
 const max = positional[2] !== undefined ? Number(positional[2]) : 4000;
 if (!Number.isFinite(max) || max <= 0) usage(['max must be a positive number']);
 

@@ -80,6 +80,7 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -1033,6 +1034,109 @@ console.log('\na2o / o2a: address and file offset');
         env.data.slices[0].uuid === WANT,
         'and --json carries the identical string',
         env.data.slices[0].uuid,
+      );
+    }
+  }
+
+  // A lone Mach-O path is the binary, not a pattern.
+  //
+  // `sym <pattern> [binary]` read `sym /path/to/Binary` as the *pattern*, fell
+  // back to `/bin/ls`, and exited 1 reporting that a different file had no
+  // matching symbols. Nothing in the output named the file that was never
+  // opened — the exact shape `README.md` calls out as the thing this project
+  // exists to avoid, in the command a new user runs first.
+  //
+  // The fallback was never the defect: falling back is right when no binary is
+  // given at all. It is wrong while holding an argument that *is* a binary,
+  // because the answer is then about a file the caller never named.
+  {
+    const target = binaries.find((b) => b.stem === 'populated');
+    if (!target) {
+      skip('a lone binary path', 'the populated fixture is missing — run npm run test:fixtures');
+    } else {
+      const lone = run('sym.mjs', [target.path]);
+
+      check(
+        lone.code === 2,
+        'sym: a lone Mach-O path is a usage error, not a silent fallback',
+        `exit ${lone.code}`,
+      );
+      check(
+        /names a Mach-O/.test(lone.stderr) && /search it:/.test(lone.stderr),
+        'sym: and it says what it read and what to type instead',
+        lone.stderr.split('\n').filter((l) => /names a Mach-O|search it:/.test(l)).join(' | '),
+      );
+      check(
+        !/substring "/.test(lone.stdout) && !/0 matches/.test(lone.stdout),
+        'sym: and it produces no answer about any file',
+        lone.stdout.slice(0, 80),
+      );
+
+      // The JSON door has to behave, or a caller piping `--json` parses prose to
+      // learn the invocation was wrong. It already does this for `bad-pattern`.
+      const loneJson = run('sym.mjs', ['--json', target.path]);
+      let env = null;
+      try { env = JSON.parse(loneJson.stdout); } catch { /* asserted below */ }
+      check(
+        env && env.ok === false && env.errors?.includes('missing-pattern'),
+        'sym: --json reports it in the envelope rather than only in prose',
+        loneJson.stdout.slice(0, 100),
+      );
+      check(
+        env?.binary === target.path,
+        'sym: and the envelope names the file the user asked about',
+        env?.binary,
+      );
+
+      // The other half: refusing too much would break real work, and these are
+      // the cases where a lone path is genuinely the pattern.
+      const notMachO = path.join(os.tmpdir(), 'macho-smoke-not-a-binary.txt');
+      fs.writeFileSync(notMachO, 'this is not a Mach-O\n');
+      const asPattern = run('sym.mjs', ['--json', notMachO, target.path]);
+      let patEnv = null;
+      try { patEnv = JSON.parse(asPattern.stdout); } catch { /* asserted below */ }
+      check(
+        patEnv && patEnv.data?.pattern === notMachO,
+        'sym: a lone path to a non-Mach-O file is still searched as a pattern',
+        patEnv?.data?.pattern ?? asPattern.stdout.slice(0, 100),
+      );
+
+      const missing = run('sym.mjs', ['--json', '/no/such/path/anywhere', target.path]);
+      let missEnv = null;
+      try { missEnv = JSON.parse(missing.stdout); } catch { /* asserted below */ }
+      check(
+        missEnv && missEnv.data?.pattern === '/no/such/path/anywhere',
+        'sym: a lone path that does not exist is still searched as a pattern',
+        missEnv?.data?.pattern ?? missing.stdout.slice(0, 100),
+      );
+
+      // And the commands this must not break.
+      const both = run('sym.mjs', ['--json', 'pop_0', target.path]);
+      check(
+        both.code === 0 && JSON.parse(both.stdout).data.count > 0,
+        'sym: pattern-then-binary still searches that binary',
+        `exit ${both.code}`,
+      );
+      const viaFlag = run('sym.mjs', ['--json', 'pop_0', '-b', target.path]);
+      check(
+        viaFlag.code === 0 && JSON.parse(viaFlag.stdout).data.count > 0,
+        'sym: and -b still does too',
+        `exit ${viaFlag.code}`,
+      );
+
+      // The tools that must NOT gain this check, because a literal that happens
+      // to be a real file is a legitimate search and not a mistake.
+      const lit = run('findliteral.mjs', ['--json', notMachO, target.path]);
+      check(
+        lit.code !== 2 || !/names a Mach-O/.test(lit.stderr),
+        'findliteral: a literal that is also a real file is not refused as a binary',
+        `exit ${lit.code}`,
+      );
+      const call = run('findcall.mjs', ['--json', target.path]);
+      check(
+        call.code === 2 && !/names a Mach-O/.test(call.stderr),
+        'findcall: a non-address first argument is refused on its own terms, not this rule',
+        `exit ${call.code}: ${call.stderr.split('\n')[0]}`,
       );
     }
   }

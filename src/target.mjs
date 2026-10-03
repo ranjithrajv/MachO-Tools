@@ -158,6 +158,41 @@ function resolveTarget(t) {
 }
 
 /**
+ * The binary an argument names, or null if it does not name one.
+ *
+ * This exists for one specific mistake, and it is the reason the two checks
+ * below are separate from {@link resolveBinary}: `resolveBinary` answers "what
+ * should I read", and when the answer would otherwise be a fallback it is
+ * *correct* to fall back. This answers the prior question — "was this argument
+ * meant to be a binary at all" — which has to be asked before falling back,
+ * because a fallback answers about a file the caller never named.
+ *
+ * `sym /path/to/SomeBinary` was the observed case: `sym` takes a pattern then a
+ * binary, so a lone path became the *pattern*, the binary defaulted, and the
+ * tool reported a confident negative about `/bin/ls` while naming the file the
+ * user had actually asked about nowhere in the output. Exit 1, no error, wrong
+ * file — which is the shape README.md calls out as the thing this project exists
+ * to avoid, appearing in the one command a new user is most likely to run first.
+ *
+ * Deliberately narrow: it only fires on a lone Mach-O or bundle path, so a
+ * pattern that merely *looks* like a path still searches normally. That is why
+ * `findliteral` and `mapliteral` do not use it — a literal that is also a real
+ * file is not a mistake, and refusing it would break a legitimate search.
+ */
+export function binaryAt(arg) {
+  if (!arg) return null;
+  if (isBundle(arg)) return executableIn(arg);
+  let st;
+  try {
+    st = fs.statSync(arg);
+  } catch {
+    return null; // does not exist, or is unreadable — either way not a target
+  }
+  if (!st.isFile()) return null;
+  return isMachOFile(arg) ? arg : null;
+}
+
+/**
  * Resolve, and exit with a usable message when there is nothing to read.
  *
  * Every tool in this directory would otherwise repeat the same four lines of

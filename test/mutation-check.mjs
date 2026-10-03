@@ -182,6 +182,24 @@ const MUTATIONS = [
     replace: `        uuid = s.toString('hex', 0, 16).replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5'); // MUTATED: the command header`,
     expect: /reads its LC_UUID|uuid/,
   },
+
+  // The lone-path guard. Not a reader mutation, so this one is caught by the
+  // suite rather than the fixture self-check.
+  //
+  // Reintroduced as "the guard does not fire" rather than "remove the guard",
+  // because removing it would leave `binaryAt` imported and unused, and the
+  // resulting `ReferenceError` would satisfy any expectation regex mentioning
+  // the binary — the failure would be a crash rather than the original defect.
+  // This form restores the original *behaviour*: the path becomes the pattern,
+  // the binary falls back, and the tool answers confidently about a file the
+  // caller never named.
+  {
+    name: 'a lone Mach-O path is refused rather than read as a pattern',
+    file: 'src/sym.mjs',
+    find: `if (!explicitBinary && positional.length === 1) {`,
+    replace: `if (!explicitBinary && positional.length === -1) { // MUTATED: never fires`,
+    expect: /lone Mach-O path is a usage error|lone Mach-O path/,
+  },
 ];
 
 function run(cmd, args, opts = {}) {
