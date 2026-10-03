@@ -340,7 +340,12 @@ function lines(tool, env) {
           L.push(`      seg ${g.segname.padEnd(16)} vm ${hex(g.vmaddr)}..${hex(g.vmaddr + g.vmsize)}  file ${g.fileoff}..${g.fileoff + g.filesize}`);
         }
         for (const sec of s.sections) {
-          L.push(`        ${(sec.segname + ',' + sec.sectname).padEnd(32)} ${hex(sec.addr)}..${hex(sec.addr + BigInt(sec.size))}  ${n(sec.size)} bytes${sec.flags & 0x80000000 ? '  code' : ''}`);
+          // `sec.type` beside the code/data marking, because the two answer
+          // different questions and a section is routinely both: `__text` is code
+          // because of `S_ATTR_PURE_INSTRUCTIONS` and `S_REGULAR` because that is
+          // what its type byte says. The marking alone calls a `__cstring` and a
+          // `__symbol_stub` both "data", which is true and useless.
+          L.push(`        ${(sec.segname + ',' + sec.sectname).padEnd(32)} ${hex(sec.addr)}..${hex(sec.addr + BigInt(sec.size))}  ${n(sec.size)} bytes${sec.flags & 0x80000000 ? '  code' : ''}${sec.type ? `  ${sec.type}` : ''}`);
         }
         if (s.loadCommands?.length) {
           L.push(`      ${s.loadCommands.length} load command(s): ${[...new Set(s.loadCommands.map((c) => c.name))].join(', ')}`);
@@ -349,9 +354,41 @@ function lines(tool, env) {
         // who sees the command named but no value will reasonably conclude the
         // binary carries none. Naming a command is not reading it.
         if (s.uuid) L.push(`      uuid ${s.uuid}`);
+
+        // The header's own claims, and the three load commands whose values are
+        // plain fields rather than another format. In the text block as well as
+        // structuredContent: a model that reads prose and never parses the JSON
+        // would otherwise see `LC_RPATH` named and no path, and conclude the binary
+        // declares none — the same reasoning gap the UUID note above is about.
+        if (s.flagsNamed?.length) L.push(`      flags ${s.flagsNamed.join(' ')}`);
+        if (s.flagsUnknown) {
+          L.push(`      flags 0x${s.flagsUnknown.toString(16)} set but unnamed in <mach-o/loader.h> — a newer toolchain, or a header this reader cannot trust`);
+        }
+        for (const rp of s.rpaths || []) L.push(`      rpath ${rp}`);
+        if (s.sourceVersion) L.push(`      source version ${s.sourceVersion.text}`);
+        if (s.entryPoint) {
+          // No address, deliberately — and the text says so, because a model shown
+          // a raw offset with no explanation is invited to add `__TEXT.vmaddr` to it
+          // itself, which is the one thing the reader declines to do because the
+          // sum is wrong on every binary measured.
+          L.push(`      entry offset ${s.entryPoint.entryoff} (raw file offset; the reader derives no address from it — see entryPoint.note)`);
+        }
       }
       if (d.slices.every((s) => s.readable && s.defined === 0)) {
         L.push('No symbols in any slice (stripped, or a dyld-cache stub). macho-findcall and macho-findliteral still work — they read bytes, not names.');
+      }
+      // Abnormalities lead the block when present, because the most likely reason
+      // an agent is reading `describe` on an unfamiliar file is that something
+      // about it did not behave — and a report buried after the section table is a
+      // report nobody reads. The wording matters as much as the placement: these
+      // are reported *alongside* a successful parse, so the text must not imply
+      // the rest of the answer is void.
+      const abnormal = (d.slices || []).flatMap((s) => (s.abnormalities || []).map((a) => ({ arch: s.arch, ...a })));
+      if (abnormal.length) {
+        L.push('');
+        L.push(`${abnormal.length} abnormality(ies). The file parsed and the data above is what could genuinely be read — these parts are the ones not to trust:`);
+        for (const a of abnormal) L.push(`  ${a.arch}  ${a.kind}: ${a.detail}`);
+        L.push('An unknown load command is NOT one of these: --loads names those by number on purpose.');
       }
       break;
 
@@ -493,6 +530,14 @@ export const TOOLS = [
       'Every slice: architecture, file extent, whether it is thin or universal, symbol counts, where __TEXT starts, ' +
       'every segment, every section and every load command. Call this FIRST on any binary — it tells you which slices ' +
       'the other tools will read and whether there are any symbol names to search at all.\n\n' +
+      'Also reports the header\'s own claims: decoded MH_* flags (flagsNamed, plus any unnamed bit as flagsUnknown), ' +
+      'each section\'s type and attributes, the build uuid, LC_RPATH paths, the LC_SOURCE_VERSION, and LC_MAIN.\n\n' +
+      'entryPoint.vaddr is ALWAYS null. LC_MAIN.entryoff is a raw file offset and the reader derives no address from ' +
+      'it, because the header\'s "__TEXT offset" description does not hold on real binaries — do not add __TEXT.vmaddr ' +
+      'to it yourself.\n\n' +
+      'abnormalities lists structural problems (unnamed flag bits, a truncated load-command list, a symbol or string ' +
+      'table past the end of the slice). These are reported ALONGSIDE a successful parse, never instead of one: a ' +
+      'non-empty list means those specific parts are untrustworthy, not that the rest of the answer is void.\n\n' +
       'Pass arch to narrow a universal binary to one slice; the file is still reported as universal, and if the named ' +
       'architecture is absent every slice is shown with a note saying so.\n\n' +
       'Names load commands but does not interpret them, and does not parse code signature, Objective-C or Swift metadata.',

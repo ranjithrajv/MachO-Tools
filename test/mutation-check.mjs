@@ -200,6 +200,52 @@ const MUTATIONS = [
     replace: `if (!explicitBinary && positional.length === -1) { // MUTATED: never fires`,
     expect: /lone Mach-O path is a usage error|lone Mach-O path/,
   },
+
+  // The section *type* byte leaking into "unknown attributes".
+  //
+  // This was a real bug in this reader, caught while adding flag decoding: the
+  // unknown-attribute remainder was computed as `flags & ~SECTION_ATTRIBUTE_MASK`,
+  // which includes the low 8 bits — the section type. So every `S_CSTRING_LITERALS`
+  // section reported `0x2` as an unrecognised attribute, and every real binary came
+  // back with a wall of spurious warnings. The attribute *region* has to be bounded
+  // before the named bits are subtracted from it; the two masks are not
+  // interchangeable.
+  {
+    name: 'a section type is not mistaken for an unknown attribute',
+    file: 'src/macho.mjs',
+    find: `  const attributesUnknown = (flags & SECTION_ATTRIBUTE_REGION & ~SECTION_ATTRIBUTE_MASK) >>> 0;`,
+    replace: `  const attributesUnknown = (flags & ~SECTION_ATTRIBUTE_MASK) >>> 0; // MUTATED: type byte included`,
+    expect: /not mistaken for an unknown attribute|no section reports unknown attribute/,
+  },
+
+  // LC_MAIN: trusting the full 64-bit width when the command is the 16-byte form
+  // that actually ships.
+  //
+  // A real bug in this reader, and one no system binary could have caught by
+  // accident. The header documents a 24-byte `struct entry_point_command` with
+  // `entryoff` and `stacksize` as `uint64_t`, but all 672 LC_MAINs measured on
+  // this machine declare `cmdsize` **16**: `entryoff` alone. In that form the
+  // upper 32 bits are uninitialised — zero on every arm64 slice, and on the x86_64
+  // shared-cache stubs whatever followed in the buffer, which is how `/bin/ls`
+  // reported its entry offset as 103,079,241,432.
+  //
+  // There is deliberately **one** mutation here, not two, and the reason is worth
+  // recording. The over-read (reading a fixed 24 bytes instead of the command's own
+  // `cmdsize`) and the width trust mask each other completely: over-reading puts
+  // the next load command's header in the upper half, and then choosing the width
+  // from `cmdsize` masks exactly those bytes back off again. A mutation that
+  // reintroduces only the over-read is therefore *undetectable* — it was tried, and
+  // the mutated tree passed. That is not a gap in the suite so much as a statement
+  // about the defect: only the width choice is independently observable, and it is
+  // the one that has to be guarded. Adding a second mutation for the over-read
+  // would mean adding one this suite cannot fail, which is worse than not having it.
+  {
+    name: 'the 16-byte LC_MAIN entryoff is read as 32 bits, not 64',
+    file: 'src/macho.mjs',
+    find: `          entryoff: wide ? raw : (raw & 0xffffffffn),`,
+    replace: `          entryoff: raw, // MUTATED: always the full 64 bits`,
+    expect: /32-bit value, not the next command glued on|uninitialised upper half/,
+  },
 ];
 
 function run(cmd, args, opts = {}) {

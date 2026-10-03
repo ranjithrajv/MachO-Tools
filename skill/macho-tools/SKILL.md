@@ -38,6 +38,45 @@ Load commands are **named, not interpreted**. Knowing a binary declares
 `LC_LOAD_DYLIB` or `LC_CODE_SIGNATURE` is a fact about it; following the
 dependency or parsing the signature is not something these tools do.
 
+Three commands are interpreted rather than merely named, because their values are
+plain fields rather than another format: `LC_RPATH` (the `@rpath` search paths, in
+declaration order), `LC_SOURCE_VERSION` (the five-part `A.B.C.D.E` source version),
+and `LC_MAIN` (the entry point). Each is in `--json` as `rpaths`, `sourceVersion`
+and `entryPoint`.
+
+**`entryPoint.vaddr` is always `null`.** The header calls `LC_MAIN`'s `entryoff` a
+`__TEXT` offset and measurement does not bear that out — on a real 113 MB binary it
+resolves into `__LINKEDIT`, and on a dyld shared-cache stub it points at code the
+file does not contain. Do not compute `__TEXT.vmaddr + entryoff` yourself; use the
+raw `entryoff` and treat `vaddr: null` as the honest answer.
+
+Header `flags` are decoded into names (`MH_PIE`, `MH_TWOLEVEL`, `MH_NOUNDEFS`, …),
+and a bit the reader cannot name is reported separately as `flagsUnknown` rather
+than dropped. Each section's `flags` are split into `type` (`S_CSTRING_LITERALS`,
+`S_SYMBOL_STUBS`, …) and `attributes` (`S_ATTR_PURE_INSTRUCTIONS`, …) — two
+disjoint halves of one word, so a section is routinely `code` *and* `S_REGULAR`.
+
+### When `abnormalities` is non-empty
+
+`describe` reports structural problems **alongside** a successful parse, never
+instead of one: a damaged file still answers every other question, and the result
+still carries the sections and symbols that could genuinely be read. So a
+non-empty `abnormalities` means "this header disagrees with this file", not "nothing
+here is trustworthy" — read what was recovered, and treat the named parts as
+suspect:
+
+| `kind` | what it means |
+|---|---|
+| `unknown-header-flags` | a flag bit `<mach-o/loader.h>` gives no name to — a newer toolchain, or a patched header |
+| `load-commands-truncated` | the header claims more load commands than the file contains, so the section and symbol tables may be incomplete |
+| `strtab-past-slice-end`, `symtab-past-slice-end` | the symbol or string table reaches past the end of the slice |
+| `section-past-slice-end`, `segment-past-slice-end` | a section or segment claims bytes the slice does not have |
+| `symtab-strtab-overlap` | the two tables overlap, which no linker emits |
+| `strtab-high-entropy` | the string table's bytes are too uniform to be text — possibly compressed or obfuscated. A heuristic; it invites a look, it does not conclude |
+
+An **unknown load command is not an abnormality** — those are named by number by
+`--loads` on purpose, so an unfamiliar-but-valid command is not graded as damage.
+
 ## Listing what a binary already contains
 
 To see its strings without knowing one in advance:

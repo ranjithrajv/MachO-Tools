@@ -53,6 +53,9 @@ export const LC_SEGMENT = 0x1;
 export const LC_SYMTAB = 0x2;
 export const LC_SEGMENT_64 = 0x19;
 export const LC_UUID_CMD = 0x1b;
+export const LC_RPATH_CMD = 0x1c;
+export const LC_MAIN_CMD = 0x29;
+export const LC_SOURCE_VERSION_CMD = 0x2b;
 
 /**
  * Load-command names, for `describe --loads`.
@@ -157,6 +160,226 @@ export const CPU_POWERPC64 = 0x01000012;
  */
 export const S_ATTR_PURE_INSTRUCTIONS = 0x80000000;
 export const S_ATTR_SOME_INSTRUCTIONS = 0x00000400;
+
+/* ------------------------------------------------------------------ *
+ * header flags
+ * ------------------------------------------------------------------ */
+
+/**
+ * The `flags` word of `mach_header`/`mach_header_64`, byte 24, as `[bit, name]`.
+ *
+ * Transcribed from `<mach-o/loader.h>` in the macOS SDK rather than from memory,
+ * and the header is a worse source of assumptions than it looks. Four of these
+ * are newer than the "28 flags" usually quoted for `MH_*`: `MH_NLIST_OUTOFSYNC_
+ * WITH_DYLDINFO`, `MH_SIM_SUPPORT`, `MH_IMPLICIT_PAGEZERO` and `MH_DYLIB_IN_CACHE`.
+ * A table that stopped at `MH_APP_EXTENSION_SAFE` would report those four as
+ * unknown bits on real binaries — which is precisely the false alarm the
+ * abnormality check in {@link detectAbnormalities} must not be able to raise.
+ *
+ * The bits are *not* contiguous: 0x20000000 has no name in the header at all,
+ * so a binary that sets it produces a genuinely unknown bit. That gap is the
+ * reason {@link decodeHeaderFlags} reports `unknown` bits separately from
+ * undecoded ones rather than folding them together.
+ */
+export const MH_FLAGS = [
+  [0x00000001, 'MH_NOUNDEFS'],
+  [0x00000002, 'MH_INCRLINK'],
+  [0x00000004, 'MH_DYLDLINK'],
+  [0x00000008, 'MH_BINDATLOAD'],
+  [0x00000010, 'MH_PREBOUND'],
+  [0x00000020, 'MH_SPLIT_SEGS'],
+  [0x00000040, 'MH_LAZY_INIT'],
+  [0x00000080, 'MH_TWOLEVEL'],
+  [0x00000100, 'MH_FORCE_FLAT'],
+  [0x00000200, 'MH_NOMULTIDEFS'],
+  [0x00000400, 'MH_NOFIXPREBINDING'],
+  [0x00000800, 'MH_PREBINDABLE'],
+  [0x00001000, 'MH_ALLMODSBOUND'],
+  [0x00002000, 'MH_SUBSECTIONS_VIA_SYMBOLS'],
+  [0x00004000, 'MH_CANONICAL'],
+  [0x00008000, 'MH_WEAK_DEFINES'],
+  [0x00010000, 'MH_BINDS_TO_WEAK'],
+  [0x00020000, 'MH_ALLOW_STACK_EXECUTION'],
+  [0x00040000, 'MH_ROOT_SAFE'],
+  [0x00080000, 'MH_SETUID_SAFE'],
+  [0x00100000, 'MH_NO_REEXPORTED_DYLIBS'],
+  [0x00200000, 'MH_PIE'],
+  [0x00400000, 'MH_DEAD_STRIPPABLE_DYLIB'],
+  [0x00800000, 'MH_HAS_TLV_DESCRIPTORS'],
+  [0x01000000, 'MH_NO_HEAP_EXECUTION'],
+  // `0x02000000`, not `0x00200000` — the bit above `MH_NO_HEAP_EXECUTION`, with a
+  // leading zero in the header. Reading it as 24 would report a real flag as
+  // unknown and invent a different one alongside it.
+  [0x02000000, 'MH_APP_EXTENSION_SAFE'],
+  [0x04000000, 'MH_NLIST_OUTOFSYNC_WITH_DYLDINFO'],
+  [0x08000000, 'MH_SIM_SUPPORT'],
+  [0x10000000, 'MH_IMPLICIT_PAGEZERO'],
+  [0x80000000, 'MH_DYLIB_IN_CACHE'],
+];
+
+/** Every named header-flag bit, as one mask. The complement is what may be unknown. */
+const MH_FLAG_MASK = MH_FLAGS.reduce((a, [bit]) => a | bit, 0);
+
+/**
+ * Decode a header `flags` word into names, plus any bits this table cannot name.
+ *
+ * `unknown` is the whole point of the return value. A flag bit that is set and
+ * unnamed is either a format newer than this reader or a corrupted header, and
+ * those two deserve very different reactions — so it is reported rather than
+ * dropped. Dropping it would make a file that declares something unfamiliar look
+ * exactly like one that does not, which is the shape of a wrong answer.
+ *
+ * @param {number} flags the `flags` word, as read unsigned
+ * @returns {{flags: number, names: string[], unknown: number}}
+ */
+export function decodeHeaderFlags(flags) {
+  const names = [];
+  for (const [bit, name] of MH_FLAGS) {
+    if ((flags & bit) !== 0) names.push(name);
+  }
+  // `~MH_FLAG_MASK` is negative in two's complement, so it is masked back to 32
+  // bits before use. `flags` is already unsigned, so this cannot go negative.
+  const unknown = (flags & ~MH_FLAG_MASK) >>> 0;
+  return { flags, names, unknown };
+}
+
+/* ------------------------------------------------------------------ *
+ * section types and attributes
+ * ------------------------------------------------------------------ */
+
+/** `SECTION_TYPE`, the low byte of a section's `flags`. */
+export const SECTION_TYPE_MASK = 0x000000ff;
+
+/**
+ * Section types, the low byte of a section's `flags`.
+ *
+ * Transcribed from `<mach-o/loader.h>`, and complete through
+ * `S_INIT_FUNC_OFFSETS` (0x16) — including the five thread-local types, which a
+ * 22-entry table copied from an older header omits, and which appear on any
+ * binary built with C++ static destructors or `thread_local` variables.
+ */
+export const SECTION_TYPES = {
+  0x00: 'S_REGULAR',
+  0x01: 'S_ZEROFILL',
+  0x02: 'S_CSTRING_LITERALS',
+  0x03: 'S_4BYTE_LITERALS',
+  0x04: 'S_8BYTE_LITERALS',
+  0x05: 'S_LITERAL_POINTERS',
+  0x06: 'S_NON_LAZY_SYMBOL_POINTERS',
+  0x07: 'S_LAZY_SYMBOL_POINTERS',
+  0x08: 'S_SYMBOL_STUBS',
+  0x09: 'S_MOD_INIT_FUNC_POINTERS',
+  0x0a: 'S_MOD_TERM_FUNC_POINTERS',
+  0x0b: 'S_COALESCED',
+  0x0c: 'S_GB_ZEROFILL',
+  0x0d: 'S_INTERPOSING',
+  0x0e: 'S_16BYTE_LITERALS',
+  0x0f: 'S_DTRACE_DOF',
+  0x10: 'S_LAZY_DYLIB_SYMBOL_POINTERS',
+  0x11: 'S_THREAD_LOCAL_REGULAR',
+  0x12: 'S_THREAD_LOCAL_ZEROFILL',
+  0x13: 'S_THREAD_LOCAL_VARIABLES',
+  0x14: 'S_THREAD_LOCAL_VARIABLE_POINTERS',
+  0x15: 'S_THREAD_LOCAL_INIT_FUNCTION_POINTERS',
+  0x16: 'S_INIT_FUNC_OFFSETS',
+};
+
+/**
+ * Section attributes, the top 24 bits of a section's `flags`, as `[bit, name]`.
+ *
+ * `S_ATTR_PURE_INSTRUCTIONS` and `S_ATTR_SOME_INSTRUCTIONS` are here as entries
+ * rather than kept only as the two constants {@link isCodeSection} tests, because
+ * a section's attributes are now *reported* and the two lists must not be able
+ * to disagree about which bits those are. {@link isCodeSection} still tests the
+ * constants — the single source of truth for the code/data decision — and this
+ * table is the single source of truth for the names.
+ *
+ * Note the hole in the numbering: `S_ATTR_DEBUG` is 0x02000000 and the bits below
+ * it are 0x00000400 downward, so 0x01000000 through 0x00800000 and 0x00008000
+ * downward have no name. Those become `attributesUnknown`, and are reported.
+ */
+export const SECTION_ATTRIBUTES = [
+  [0x80000000, 'S_ATTR_PURE_INSTRUCTIONS'],
+  [0x40000000, 'S_ATTR_NO_TOC'],
+  [0x20000000, 'S_ATTR_STRIP_STATIC_SYMS'],
+  [0x10000000, 'S_ATTR_NO_DEAD_STRIP'],
+  [0x08000000, 'S_ATTR_LIVE_SUPPORT'],
+  [0x04000000, 'S_ATTR_SELF_MODIFYING_CODE'],
+  [0x02000000, 'S_ATTR_DEBUG'],
+  [0x00000400, 'S_ATTR_SOME_INSTRUCTIONS'],
+  [0x00000200, 'S_ATTR_EXT_RELOC'],
+  [0x00000100, 'S_ATTR_LOC_RELOC'],
+];
+
+const SECTION_ATTRIBUTE_MASK = SECTION_ATTRIBUTES.reduce((a, [bit]) => a | bit, 0);
+
+/**
+ * The attribute *region* of a section's `flags`: `SECTION_ATTRIBUTES`, the top 24.
+ *
+ * Separate from {@link SECTION_ATTRIBUTE_MASK}, which is only the bits this table
+ * can name — and the two are not interchangeable. Masking with the complement of
+ * the named bits and calling the remainder "unknown attributes" also catches the
+ * section *type* in the low byte, so every `S_CSTRING_LITERALS` section reported
+ * `0x2` as an unknown attribute and every real binary came back with a wall of
+ * spurious warnings. The region has to be bounded first, and only then compared
+ * against the names.
+ */
+const SECTION_ATTRIBUTE_REGION = 0xffffff00;
+
+/**
+ * Split a section's `flags` word into its type and its attributes.
+ *
+ * The two occupy disjoint parts of one word — `SECTION_TYPE` is the low 8 bits,
+ * `SECTION_ATTRIBUTES` the top 24 — and they answer different questions. Type
+ * says what the bytes are (`S_CSTRING_LITERALS`, `S_SYMBOL_STUBS`);
+ * attributes say how the linker may treat them (`S_ATTR_PURE_INSTRUCTIONS`,
+ * `S_ATTR_NO_DEAD_STRIP`). `code`/`data` in the section listing comes from the
+ * attributes, and the type is printed beside it, so a section can be read as
+ * "code" and `S_REGULAR` at once — which is what `__text` is.
+ *
+ * @param {number} flags the section's `flags` word, as read unsigned
+ * @returns {{type: string, typeRaw: number, attributes: string[], attributesUnknown: number}}
+ */
+export function decodeSectionFlags(flags) {
+  const typeRaw = flags & SECTION_TYPE_MASK;
+  const attributes = [];
+  for (const [bit, name] of SECTION_ATTRIBUTES) {
+    if ((flags & bit) !== 0) attributes.push(name);
+  }
+  const attributesUnknown = (flags & SECTION_ATTRIBUTE_REGION & ~SECTION_ATTRIBUTE_MASK) >>> 0;
+  return {
+    type: SECTION_TYPES[typeRaw] || `S_UNKNOWN_0x${typeRaw.toString(16)}`,
+    typeRaw,
+    attributes,
+    attributesUnknown,
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * LC_SOURCE_VERSION
+ * ------------------------------------------------------------------ */
+
+/**
+ * Decode an `LC_SOURCE_VERSION` word into its five components.
+ *
+ * The header documents this as `A.B.C.D.E packed as a24.b10.c10.d10.e10`, which
+ * is not five equal fields — `A` is 24 bits and the rest are 10. Decoding it as
+ * five 10-bit fields, which is the obvious reading and the one most tools get
+ * wrong, silently mangles every component: a real `A` of 0x1000000 would lose its
+ * high bits and the whole version would come out as `0.0.0.x.y`. So the shifts
+ * are taken from that comment rather than derived.
+ *
+ * @param {bigint} v the packed `version` word
+ * @returns {{raw: bigint, a: bigint, b: bigint, c: bigint, d: bigint, e: bigint, text: string}}
+ */
+export function decodeSourceVersion(v) {
+  const a = (v >> 40n) & 0xffffffn;
+  const b = (v >> 30n) & 0x3ffn;
+  const c = (v >> 20n) & 0x3ffn;
+  const d = (v >> 10n) & 0x3ffn;
+  const e = v & 0x3ffn;
+  return { raw: v, a, b, c, d, e, text: `${a}.${b}.${c}.${d}.${e}` };
+}
 
 /**
  * Mach-O and fat-header magics, as raw byte sequences.
@@ -340,12 +563,21 @@ export function parseThin(f, base = 0) {
   const filetype = hdr.readUInt32LE(12);
   const ncmds = hdr.readUInt32LE(16);
   const sizeofcmds = hdr.readUInt32LE(20);
+  // Byte 24 in both header forms. `mach_header` and `mach_header_64` agree here
+  // because the field precedes `reserved` and the only difference between the two
+  // is that trailing 4 bytes plus the wider `n_value`s further in — so this one
+  // is *not* a place the 32-bit/64-bit offset trap applies, and it is read
+  // before `is64` is ever consulted rather than inside a `wide ?` ternary.
+  const flags = hdr.readUInt32LE(24);
   let off = base + (is64 ? 32 : 28);
   const segments = [];
   const sections = [];
   const loadCommands = [];
   let symtab = null;
   let uuid = null;
+  let entryPoint = null;
+  let sourceVersion = null;
+  const rpaths = [];
 
   for (let i = 0; i < ncmds; i++) {
     const lc = f.read(off, 8);
@@ -381,6 +613,83 @@ export function parseThin(f, base = 0) {
           strsize: s.readUInt32LE(20),
         };
       }
+    } else if (cmd === LC_MAIN_CMD) {
+      // `struct entry_point_command`. The header documents `cmdsize` 24, with
+      // `entryoff` and `stacksize` as `uint64_t` — and that is the case the
+      // header describes, but it is not the case that ships.
+      //
+      // Every LC_MAIN measured on this machine's own binaries — 672 slices across
+      // /bin, /usr/bin and system frameworks — declares `cmdsize` **16**, i.e.
+      // `entryoff` with no `stacksize` after it. Reading a fixed 24 bytes here
+      // does not merely read one field too many: it reads 8 bytes *past the end of
+      // this command*, which is the next load command's header. The result is a
+      // plausible-looking `stacksize`, and on an `x86_64` slice an `entryoff`
+      // whose high half is the following command's `cmdsize` — the kind of value
+      // that reads as a real offset and is not one.
+      //
+      // So the command's own `cmdsize` bounds the read, and `stacksize` is taken
+      // only when there are bytes for it. `entryoff` stays a BigInt either way:
+      // narrowing a genuine 64-bit offset to a Number would lose precision above
+      // 2^53, and a caller has no way to tell a truncated one from a small one.
+      const want = Math.min(cmdsize, 24);
+      const s = f.read(off, want);
+      if (s.length >= 16) {
+        // The eight bytes the header calls a `uint64_t`. Taken whole, because the
+        // two forms of this command are not the same width in practice — see
+        // `rawHigh32` and `value` below.
+        const raw = s.readBigUInt64LE(8);
+        const high32 = Number((raw >> 32n) & 0xffffffffn);
+        // In the 16-byte form the upper half of this field is **uninitialised**,
+        // not data. Measured across 672 LC_MAINs on this machine: the upper 32
+        // bits are zero on every arm64/arm64e slice and non-zero on the x86_64
+        // shared-cache stubs (0x8, 0x10, 0x18 — values with no relationship to
+        // anything else in the file). Reading those eight bytes as a uint64
+        // therefore reports 103,079,241,432 as `/bin/ls`'s entry offset, which is
+        // not an offset and looks entirely like one.
+        //
+        // So the width is chosen from `cmdsize`: the documented 24-byte command
+        // carries a real uint64, and the 16-byte command that actually ships
+        // carries a 32-bit value in the low half. `rawHigh32` is reported
+        // regardless, so the raw bytes stay visible and nothing is hidden.
+        const wide = cmdsize >= 24;
+        entryPoint = {
+          entryoff: wide ? raw : (raw & 0xffffffffn),
+          rawHigh32: high32,
+          // Absent in the 16-byte form. `null`, not 0: "this command declared no
+          // stack size" and "this command declared a stack size of zero" are
+          // different claims, and only one of them is true here.
+          stacksize: wide ? s.readBigUInt64LE(16) : null,
+          cmdsize,
+          valueBasis: wide
+            ? 'LC_MAIN.entryoff read as uint64 — this command declares the documented 24-byte layout'
+            : `LC_MAIN.entryoff read as its low 32 bits — this command declares cmdsize ${cmdsize}, ` +
+              'the 16-byte form that actually ships; the upper 32 bits are uninitialised' +
+              (high32 !== 0 ? ` and are non-zero here (0x${high32.toString(16)})` : ''),
+        };
+      }
+    } else if (cmd === LC_RPATH_CMD) {
+      // `struct rpath_command` ends in `union lc_str path`, which is an *offset*
+      // — measured from the start of this load command — not a string stored
+      // inline. Reading eight bytes in as if it were the first characters of the
+      // path yields a string that looks like a path: a little-endian length-like
+      // value, and it will pass a "does it look sane" check while naming a
+      // directory that does not exist. The offset is taken literally, and
+      // bounds-checked against this command's own `cmdsize`.
+      const s = f.read(off, 12);
+      if (s.length >= 12) {
+        const rel = s.readUInt32LE(8);
+        if (rel >= 12 && rel < cmdsize) {
+          const body = f.read(off + rel, cmdsize - rel);
+          const z = body.indexOf(0);
+          const path = body.toString('latin1', 0, z < 0 ? body.length : z);
+          if (path) rpaths.push(path);
+        }
+      }
+    } else if (cmd === LC_SOURCE_VERSION_CMD) {
+      // `struct source_version_command`, `cmdsize` 16. The packing is
+      // `a24.b10.c10.d10.e10`; see {@link decodeSourceVersion}.
+      const s = f.read(off, 16);
+      if (s.length >= 16) sourceVersion = decodeSourceVersion(s.readBigUInt64LE(8));
     } else if (cmd === LC_SEGMENT_64 || cmd === LC_SEGMENT) {
       const wide = cmd === LC_SEGMENT_64;
       const need = wide ? 72 : 56;
@@ -423,6 +732,7 @@ export function parseThin(f, base = 0) {
         for (let k = 0; k < nsects; k++) {
           const sc = f.read(sectBase + k * sectSize, sectSize);
           if (sc.length < sectSize) break;
+          const secFlags = sc.readUInt32LE(wide ? 64 : 56);
           sections.push({
             sectname: sc.toString('latin1', 0, 16).replace(/\0.*$/, ''),
             segname: sc.toString('latin1', 16, 32).replace(/\0.*$/, ''),
@@ -433,14 +743,25 @@ export function parseThin(f, base = 0) {
             // in-file signal that separates code from data, and a byte scanner
             // that cannot tell them apart reports data as call sites — see
             // `instructionSections`. Offset 64 in `section_64`, 56 in `section`.
-            flags: sc.readUInt32LE(wide ? 64 : 56),
+            //
+            // `flags` stays the raw word and stays authoritative; the decoded
+            // `type`/`attributes` are spread in beside it rather than replacing
+            // it, so a caller that needs the undecoded value — and the abnormality
+            // check does, to notice attribute bits this table cannot name — does
+            // not have to recompute it.
+            flags: secFlags,
+            ...decodeSectionFlags(secFlags),
           });
         }
       }
     }
     off += cmdsize;
   }
-  return { is64, cputype, cpusubtype, filetype, ncmds, sizeofcmds, segments, sections, loadCommands, symtab, uuid };
+  return {
+    is64, cputype, cpusubtype, filetype, ncmds, sizeofcmds, flags,
+    segments, sections, loadCommands, symtab, uuid,
+    entryPoint, sourceVersion, rpaths,
+  };
 }
 
 /**
@@ -694,6 +1015,258 @@ export function isBackedByFile(thin, sec) {
   // A section's file range is only real if it lies within the segment's.
   return sec.offset >= Number(seg.fileoff)
     && sec.offset + sec.size <= Number(seg.fileoff) + Number(seg.filesize);
+}
+
+/**
+ * An `LC_MAIN` entry point, resolved only as far as the bytes actually support.
+ *
+ * ## Why there is no address here
+ *
+ * `<mach-o/loader.h>` calls `entryoff` the "file (__TEXT) offset of main()", and
+ * the obvious implementation is `__TEXT.vmaddr + entryoff`. Measured against real
+ * binaries, that arithmetic does not produce the entry point:
+ *
+ *   - On a 113 MB, fully-symbolled arm64 `node`, `entryoff` is 88,241,840 while
+ *     `__TEXT` spans file bytes 0..85,082,112. The offset is *past the end of
+ *     `__TEXT`*, and as a slice-relative file offset it resolves into
+ *     `__LINKEDIT` — the link-edit region holding the symbol table. It matches no
+ *     defined symbol under any of the three plausible bases.
+ *   - On dyld shared-cache stubs (`/bin/ls`, `/bin/cat`, and most of /bin), the
+ *     same is true and expected: the stub has no code of its own, so the offset
+ *     refers to something the file does not contain.
+ *
+ * So `vaddr` is `null` and stays null. Emitting `__TEXT.vmaddr + entryoff` would
+ * produce an address of exactly the shape a caller then feeds to `symlookup` and
+ * `findcall` — and it would be wrong on essentially every binary, in a way that
+ * looks like a measurement. A missing answer is recoverable; a fabricated address
+ * is not, which is the rule `lookupAddress` and `toFileOffset` already follow.
+ *
+ * What *is* reported is the raw value, the declared `cmdsize` that determines how
+ * it should be read, and the derived address only when it can be checked — see
+ * `entryoffLandsIn`.
+ *
+ * @param {object} thin a `parseThin()` result
+ * @returns {null|{entryoff: bigint, stacksize: bigint|null, cmdsize: number,
+ *   vaddr: null, note: string}}
+ */
+export function resolveEntryPoint(thin) {
+  if (!thin.entryPoint) return null;
+  const { entryoff, stacksize, cmdsize, rawHigh32, valueBasis } = thin.entryPoint;
+  const text = thin.segments.find((g) => g.segname === '__TEXT') || null;
+  const inText = text
+    ? entryoff >= text.fileoff && entryoff < text.fileoff + text.filesize
+    : null;
+  return {
+    entryoff,
+    stacksize,
+    cmdsize,
+    rawHigh32,
+    valueBasis,
+    vaddr: null,
+    // Disclosed rather than acted on. `false` here is the normal case for a
+    // shared-cache stub and is also true of a fully-symbolled `node`, so it is
+    // not by itself evidence of damage — which is why it is not an abnormality.
+    entryoffLandsInText: inText,
+    note: 'raw file offset; no address is derived from it, because the header\'s ' +
+      '"__TEXT offset" description does not hold on the binaries measured'
+      + (inText === false ? ', and this one falls outside __TEXT' : ''),
+  };
+}
+
+/**
+ * Shannon entropy of a buffer, in bits per byte (0..8).
+ *
+ * Sampled over at most `maxBytes` rather than the whole buffer. The only consumer
+ * is the packing heuristic in {@link detectAbnormalities}, and "is this blob
+ * compressed" is answered by its first megabyte as reliably as by its last —
+ * whereas a 200 MB string table read in full on every `describe` would make the
+ * cheapest tool in the package the slowest one. Sampling a prefix also keeps the
+ * measurement cheap for the fixture-sized files the suite runs on.
+ */
+export function shannonEntropy(f, offset, length, maxBytes = 1 << 20) {
+  const n = Math.min(length, maxBytes);
+  if (n <= 0) return 0;
+  const buf = f.read(offset, n);
+  if (buf.length === 0) return 0;
+  const freq = new Uint32Array(256);
+  for (const b of buf) freq[b]++;
+  let h = 0;
+  for (const c of freq) {
+    if (c === 0) continue;
+    const p = c / buf.length;
+    h -= p * Math.log2(p);
+  }
+  return h;
+}
+
+/** Above this many bits per byte, a string table is treated as probably packed. */
+const PACKED_ENTROPY = 6.4;
+
+/**
+ * Structural problems in one slice, reported rather than thrown.
+ *
+ * ## Why this exists
+ *
+ * Every other function in this reader answers a question about a well-formed
+ * binary. This one answers a question about a *malformed* one, which is the
+ * case where the confident-wrong-answer failure this project keeps fighting is
+ * most likely: a truncated file, a hand-patched header or a packed binary all
+ * produce bytes that parse without error and describe as something real.
+ *
+ * It is deliberately separate from parsing. A reader that reported a problem by
+ * returning null would make "this binary is damaged" indistinguishable from "this
+ * binary does not have that", which is the same conflation `a2o` was fixed for.
+ * So parsing stays permissive and this reports alongside it.
+ *
+ * ## What is checked, and what is not
+ *
+ * Only things that can be decided from the bytes alone, and only where being
+ * wrong would change a tool's answer:
+ *
+ *   - header flag bits with no name in `loader.h`;
+ *   - fewer readable load commands than the header's `ncmds` claims, which means
+ *     the walk was cut short and the section and symbol tables may be incomplete;
+ *   - a section or segment claiming bytes past the end of its slice;
+ *   - a symbol or string table reaching past the slice;
+ *   - the symbol and string tables overlapping each other, which no legitimate
+ *     linker output does;
+ *   - a string table whose byte distribution is too flat to be text.
+ *
+ * Deliberately not checked: an `LC_MAIN` entry point outside `__TEXT`. That is the
+ * normal state of a dyld shared-cache stub and, measured, also true of a
+ * fully-symbolled 113 MB `node` — so the check fired on essentially every correct
+ * binary this package is pointed at. A warning that is always true teaches a
+ * reader to skip warnings; the raw offset is reported in `entryPoint` instead, and
+ * whether it lands in `__TEXT` is disclosed there as a fact rather than a verdict.
+ *
+ * Deliberately *not* checked: unknown load commands. Those are already surfaced
+ * by `loadCommandName` as a number rather than a name, which is this project's
+ * chosen line for "present but not understood", and listing them a second time
+ * as abnormalities would grade an unfamiliar-but-valid command as damage.
+ *
+ * ## On the packing heuristic
+ *
+ * Entropy is a heuristic and is labelled as one. Printable text sits around
+ * 4.5-5.2 bits per byte and compressed or encrypted data near 8, so the
+ * threshold sits in the empty gap between them — but obfuscated-but-not-compressed
+ * data lands above it, and a legitimately compressed string table would land
+ * above it too. It says "look at this", never "this is packed".
+ *
+ * @param {object} f an `opener()` handle
+ * @param {object} thin a `parseThin()` result
+ * @param {object} [opts]
+ * @param {number} [opts.sliceOffset=0] the slice's offset within the file
+ * @param {number} [opts.sliceSize] the slice's size; defaults to the rest of the file
+ * @returns {Array<{kind: string, detail: string}>}
+ */
+export function detectAbnormalities(f, thin, { sliceOffset = 0, sliceSize = null } = {}) {
+  const out = [];
+  const sliceEnd = sliceSize == null ? f.size - sliceOffset : sliceSize;
+  const add = (kind, detail) => out.push({ kind, detail });
+
+  // Header flags this table cannot name. A real binary can set a bit added after
+  // this reader was written, so the detail says "unrecognised" rather than
+  // "corrupt" — it is a claim about the names, not about the file.
+  const hdr = decodeHeaderFlags(thin.flags);
+  if (hdr.unknown !== 0) {
+    add(
+      'unknown-header-flags',
+      `header sets flag bits with no name in <mach-o/loader.h>: 0x${hdr.unknown.toString(16)}`,
+    );
+  }
+
+  if (thin.loadCommands.length < thin.ncmds) {
+    add(
+      'load-commands-truncated',
+      `header declares ${thin.ncmds} load command(s), only ${thin.loadCommands.length} were readable — ` +
+        'the segment, section and symbol tables below may be incomplete',
+    );
+  }
+
+  // Sections past the slice. Gated on `isBackedByFile`, which is what separates
+  // "claims bytes that are not there" from "__bss legitimately occupies no bytes":
+  // a zero-fill section carries a real address range and a `size` that can easily
+  // exceed the file, and flagging it would be flagging every ordinary binary.
+  for (const sec of thin.sections) {
+    if (sec.size === 0) continue;
+    if (!isBackedByFile(thin, sec)) continue;
+    if (sec.offset + sec.size > sliceEnd) {
+      add(
+        'section-past-slice-end',
+        `${sec.segname},${sec.sectname} claims bytes ${sec.offset}..${sec.offset + sec.size}, ` +
+          `past the end of the slice at ${sliceEnd}`,
+      );
+    }
+    if (sec.attributesUnknown !== 0) {
+      add(
+        'unknown-section-attributes',
+        `${sec.segname},${sec.sectname} sets attribute bits with no name in <mach-o/loader.h>: ` +
+          `0x${sec.attributesUnknown.toString(16)}`,
+      );
+    }
+    if (sec.type.startsWith('S_UNKNOWN_')) {
+      add(
+        'unknown-section-type',
+        `${sec.segname},${sec.sectname} has section type 0x${sec.typeRaw.toString(16)}, ` +
+          'which <mach-o/loader.h> does not define',
+      );
+    }
+  }
+
+  for (const seg of thin.segments) {
+    const hi = seg.fileoff + seg.filesize;
+    if (hi > sliceEnd) {
+      add(
+        'segment-past-slice-end',
+        `${seg.segname} claims file bytes ${seg.fileoff}..${hi}, past the end of the slice at ${sliceEnd}`,
+      );
+    }
+  }
+
+  const st = thin.symtab;
+  if (st) {
+    // The stride differs between `nlist` (12) and `nlist_64` (16), so it is taken
+    // from the parse rather than written as a constant — the same trap that once
+    // read every symbol in a 32-bit slice one entry off.
+    const stride = thin.is64 ? 16 : 12;
+    const symEnd = st.symoff + st.nsyms * stride;
+    if (st.nsyms > 0 && symEnd > sliceEnd) {
+      add(
+        'symtab-past-slice-end',
+        `LC_SYMTAB claims ${st.nsyms} symbol(s) in bytes ${st.symoff}..${symEnd}, ` +
+          `past the end of the slice at ${sliceEnd}`,
+      );
+    }
+    const strEnd = st.stroff + st.strsize;
+    if (st.strsize > 0 && strEnd > sliceEnd) {
+      add(
+        'strtab-past-slice-end',
+        `LC_SYMTAB claims a string table in bytes ${st.stroff}..${strEnd}, ` +
+          `past the end of the slice at ${sliceEnd}`,
+      );
+    }
+    if (st.nsyms > 0 && st.strsize > 0
+      && st.symoff < strEnd && st.stroff < symEnd) {
+      add(
+        'symtab-strtab-overlap',
+        `the symbol table (${st.symoff}..${symEnd}) and the string table (${st.stroff}..${strEnd}) ` +
+          'overlap — no linker emits this, and a reader cannot trust either extent',
+      );
+    }
+    if (st.strsize > 0) {
+      const h = shannonEntropy(f, sliceOffset + st.stroff, st.strsize);
+      if (h > PACKED_ENTROPY) {
+        add(
+          'strtab-high-entropy',
+          `the string table averages ${h.toFixed(2)} bits/byte over its first ` +
+            `${Math.min(st.strsize, 1 << 20)} bytes — above the ~6.4 threshold, ` +
+            'so it may be compressed or obfuscated rather than plain text',
+        );
+      }
+    }
+  }
+
+  return out;
 }
 
 /**

@@ -47,6 +47,8 @@ import {
   opener, isMachOFile, slicesOf, parseThin, readSymbols, preferredSlice,
   richestSlice, sliceName, sliceArchName, textSection, codeSections, sectionOf, toVaddr,
   toFileOffset, isBackedByFile, archMatches,
+  decodeHeaderFlags, decodeSectionFlags, decodeSourceVersion, detectAbnormalities,
+  resolveEntryPoint,
 } from './macho.mjs';
 
 /* ------------------------------------------------------------------ *
@@ -134,13 +136,15 @@ export function describe(path) {
           arch, offset: s.offset, size: s.size, thin: s.thin, readable: false,
           nsyms: 0, defined: 0, codeSections: 0, textAddr: null, textSize: 0,
           uuid: null, segments: [], sections: [], loadCommands: [],
-          segments: [], sections: [], loadCommands: [],
+          flags: 0, flagsNamed: [], flagsUnknown: 0,
+          entryPoint: null, rpaths: [], sourceVersion: null, abnormalities: [],
           note: 'no Mach-O header at this offset',
         });
         continue;
       }
       const syms = readSymbols(f, s.offset, thin);
       const text = textSection(thin);
+      const hdr = decodeHeaderFlags(thin.flags);
       slices.push({
         arch,
         offset: s.offset,
@@ -163,6 +167,25 @@ export function describe(path) {
         sections: thin.sections,
         loadCommands: thin.loadCommands,
         uuid: thin.uuid,
+        // The header `flags` word, its decoded names, and — kept separate — any
+        // bits this reader cannot name. Folding "unrecognised" into "not set"
+        // would let a newer binary describe as an ordinary one, which is the
+        // quiet wrong answer this package exists to avoid.
+        flags: thin.flags,
+        flagsNamed: hdr.names,
+        flagsUnknown: hdr.unknown,
+        // `entryPoint` carries the resolved vaddr plus the segment it was derived
+        // from, so a caller can see the arithmetic rather than trust a bare
+        // number. `null` when the slice has no LC_MAIN.
+        entryPoint: resolveEntryPoint(thin),
+        // Runtime search paths, in the order the binary declares them. Order is
+        // load order, and `@rpath` resolution depends on it.
+        rpaths: thin.rpaths,
+        // The five-part source version, or null when the binary declares none.
+        sourceVersion: thin.sourceVersion,
+        // Structural problems, reported alongside the parse rather than instead
+        // of it. Empty on a healthy binary, which is the common case.
+        abnormalities: detectAbnormalities(f, thin, { sliceOffset: s.offset, sliceSize: s.size }),
       });
     }
     return {

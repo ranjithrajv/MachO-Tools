@@ -1106,6 +1106,328 @@ console.log('\na2o / o2a: address and file offset');
     }
   }
 
+  // What the `meta` fixture declares, written out here rather than imported from
+  // the generator's manifest — the same choice `WANT` makes for the UUID above, and
+  // for the same reason: a test that compares the reader against the thing that
+  // built the input proves only that the two agree. Stating the numbers here also
+  // states what they *mean*, which the generator's output cannot.
+  const META_EXPECTED = {
+    flags: 0x1 | 0x4 | 0x80 | 0x200000,               // NOUNDEFS|DYLDLINK|TWOLEVEL|PIE
+    flagNames: ['MH_NOUNDEFS', 'MH_DYLDLINK', 'MH_TWOLEVEL', 'MH_PIE'],
+    dataSectionType: 'S_CSTRING_LITERALS',
+    dataSectionAttributes: ['S_ATTR_DEBUG'],
+    rpath: '@executable_path/../Frameworks',
+    entryoff: 0x40,
+    entryoffHighGarbage: 0x18,
+    sourceVersion: '4660.12.4.5.6',
+  };
+
+  // The three defects planted in the `damaged` fixture.
+  const DAMAGED_EXPECTED = {
+    flagNames: ['MH_NOUNDEFS', 'MH_DYLDLINK', 'MH_TWOLEVEL', 'MH_PIE'],
+    unnamedFlagBit: 0x20000000,                      // the gap in loader.h
+    kinds: ['unknown-header-flags', 'load-commands-truncated', 'strtab-past-slice-end'],
+  };
+
+  // Header metadata: flags, section type and attributes, LC_MAIN, LC_RPATH,
+  // LC_SOURCE_VERSION — and abnormality detection.
+  //
+  // One block, because the two halves are the same idea: a header is a set of
+  // claims, and a reader either reports them faithfully or quietly disagrees with
+  // the file.
+  {
+    const meta = binaries.find((b) => b.stem === 'meta');
+    const dmg = binaries.find((b) => b.stem === 'damaged');
+    const want = META_EXPECTED;
+    const damagedWant = DAMAGED_EXPECTED;
+
+    if (!meta) {
+      skip('header metadata', 'the meta fixture is missing — run npm run test:fixtures');
+    } else {
+      const { describe: describeFile } = await import('../src/api.mjs');
+      const s = describeFile(meta.path).slices[0];
+
+      // ---- header flags
+      check(
+        s.flagsNamed.join(',') === want.flagNames.join(','),
+        'describe: the header flags word is decoded into names',
+        `got ${s.flagsNamed.join(',') || 'none'}`,
+      );
+      check(
+        s.flagsUnknown === 0,
+        'describe: no flag bit is reported as unrecognised on a well-formed binary',
+        `unknown=0x${s.flagsUnknown.toString(16)}`,
+      );
+      check(
+        s.flags === want.flags,
+        'describe: the raw flags word is carried alongside the names',
+        `0x${s.flags.toString(16)}`,
+      );
+      // A flag table that stops short would report a real bit as unknown on any
+      // binary built by a newer toolchain. `MH_HAS_TLV_DESCRIPTORS` is the one to
+      // watch: it is set by anything using thread-local variables with a non-trivial
+      // destructor, which is most C++ binaries.
+      check(
+        !s.flagsNamed.includes('MH_APP_EXTENSION_SAFE')
+          || s.flagsNamed.length === 1,
+        'describe: MH_APP_EXTENSION_SAFE is not confused with a lower bit',
+      );
+
+      // ---- section flags: type and attributes are disjoint halves of one word
+      const data = s.sections.find((x) => x.sectname === '__data');
+      const text = s.sections.find((x) => x.sectname === '__text');
+      check(
+        data?.type === want.dataSectionType,
+        `describe: a section's type is read from the low byte (${want.dataSectionType})`,
+        `got ${data?.type}`,
+      );
+      check(
+        data?.attributes.join(',') === want.dataSectionAttributes.join(','),
+        'describe: a section attribute is read from the top 24 bits',
+        `got [${data?.attributes.join(',')}]`,
+      );
+      // The regression that mattered most here. `S_CSTRING_LITERALS` is 0x2 and it
+      // lives *below* the attribute region, so a reader that computed unknown
+      // attributes as "everything not named" would report 0x2 here — on this
+      // fixture and on every C-string section of every real binary.
+      check(
+        data?.attributesUnknown === 0,
+        'describe: the section type is not mistaken for an unknown attribute',
+        `got 0x${data?.attributesUnknown.toString(16)}`,
+      );
+      check(
+        text?.type === 'S_REGULAR',
+        'describe: __text is S_REGULAR, and its instruction attributes do not make it a literal type',
+        `got ${text?.type}`,
+      );
+      check(
+        text?.attributes.includes('S_ATTR_PURE_INSTRUCTIONS')
+          && text?.attributes.includes('S_ATTR_SOME_INSTRUCTIONS'),
+        'describe: both instruction attributes are named',
+        `got [${text?.attributes.join(',')}]`,
+      );
+      // `code`/`data` must still agree with the attributes, because findcall types
+      // its scan by the same predicate.
+      check(
+        (text.flags & 0x80000000) !== 0 && (data.flags & 0x80000000) === 0,
+        'describe: the decoded attributes agree with the raw bits findcall reads',
+      );
+
+      // ---- LC_RPATH: the payload is an offset, not an inline string
+      check(
+        s.rpaths.length === 1 && s.rpaths[0] === want.rpath,
+        'describe: the LC_RPATH path is read through its lc_str offset',
+        `got ${JSON.stringify(s.rpaths)}`,
+      );
+
+      // ---- LC_MAIN, 16-byte form
+      //
+      // The fixture plants 0x18 in the upper half of `entryoff`, exactly as the
+      // x86_64 slices of the system's own binaries do. Reading a fixed 24 bytes
+      // instead of the command's declared 16 would report an entry offset of
+      // 0x180000040 — a number that looks like an offset and is not one.
+      check(
+        s.entryPoint !== null && Number(s.entryPoint.entryoff) === want.entryoff,
+        'describe: LC_MAIN.entryoff is the 32-bit value, not the next command glued on',
+        `got ${s.entryPoint?.entryoff}`,
+      );
+      check(
+        s.entryPoint?.rawHigh32 === want.entryoffHighGarbage,
+        'describe: the uninitialised upper half is disclosed rather than hidden',
+        `got 0x${s.entryPoint?.rawHigh32.toString(16)}`,
+      );
+      check(
+        s.entryPoint?.stacksize === null,
+        'describe: the 16-byte LC_MAIN reports no stacksize',
+        `got ${s.entryPoint?.stacksize}`,
+      );
+      check(
+        s.entryPoint?.cmdsize === 16,
+        "describe: LC_MAIN's declared cmdsize is reported, so the reading is explicable",
+        `got ${s.entryPoint?.cmdsize}`,
+      );
+      // The refusal, which is a feature rather than a gap. See resolveEntryPoint:
+      // __TEXT.vmaddr + entryoff lands in __LINKEDIT on a real 113 MB binary, so
+      // publishing that sum would be publishing a wrong address.
+      check(
+        s.entryPoint?.vaddr === null && /no address is derived/.test(s.entryPoint?.note || ''),
+        'describe: no virtual address is invented from an LC_MAIN offset',
+        `vaddr=${s.entryPoint?.vaddr}`,
+      );
+
+      // ---- LC_SOURCE_VERSION, a24.b10.c10.d10.e10
+      check(
+        s.sourceVersion?.text === want.sourceVersion,
+        'describe: LC_SOURCE_VERSION decodes with unequal field widths',
+        `got ${s.sourceVersion?.text}`,
+      );
+      check(
+        Number(s.sourceVersion?.a) === 0x1234,
+        'describe: the 24-bit A component is not truncated to 10 bits',
+        `got ${s.sourceVersion?.a}`,
+      );
+
+      check(
+        s.abnormalities.length === 0,
+        'describe: a well-formed binary reports no abnormalities',
+        `got ${s.abnormalities.map((a) => a.kind).join(',') || 'none'}`,
+      );
+
+      // ---- and the CLI, because a field nothing prints is a field nothing reads
+      const textOut = run('describe.mjs', ['--sections', meta.path]);
+      check(
+        /MH_PIE/.test(textOut.stdout) && /S_CSTRING_LITERALS/.test(textOut.stdout),
+        'describe.mjs: prints the header flags and the section types',
+        textOut.stdout.split('\n').filter((l) => /MH_PIE|S_CSTRING/.test(l)).join(' | ').slice(0, 100),
+      );
+      check(
+        /@executable_path/.test(textOut.stdout) && /4660\.12\.4\.5\.6/.test(textOut.stdout),
+        'describe.mjs: prints the rpath and the source version',
+      );
+      const metaJson = run('describe.mjs', ['--json', meta.path]);
+      let menv = null;
+      try { menv = JSON.parse(metaJson.stdout); } catch { /* asserted below */ }
+      check(
+        menv?.data?.slices?.[0]?.entryPoint?.vaddr === null
+          && Array.isArray(menv?.data?.slices?.[0]?.rpaths)
+          && typeof menv?.data?.slices?.[0]?.abnormalities?.length === 'number',
+        'describe.mjs --json: the new fields survive the JSON door',
+        metaJson.stdout.slice(0, 60),
+      );
+    }
+
+    // ---- abnormality detection
+    //
+    // Every binary on a healthy machine is healthy, so without a deliberately
+    // broken fixture these checks could never be shown to fire at all — which is
+    // the same trap the corpus was built to escape for symbol coverage.
+    if (!dmg) {
+      skip('abnormality detection', 'the damaged fixture is missing — run npm run test:fixtures');
+    } else {
+      const { describe: describeFile } = await import('../src/api.mjs');
+      const s = describeFile(dmg.path).slices[0];
+      const kinds = s.abnormalities.map((a) => a.kind);
+
+      for (const kind of damagedWant.kinds) {
+        check(
+          kinds.includes(kind),
+          `describe: reports ${kind}`,
+          `got ${kinds.join(',') || 'none'}`,
+        );
+      }
+      check(
+        s.flagsUnknown === damagedWant.unnamedFlagBit,
+        'describe: the unrecognised flag bit is reported separately from the named ones',
+        `got 0x${s.flagsUnknown.toString(16)}`,
+      );
+      check(
+        s.flagsNamed.length === damagedWant.flagNames.length,
+        'describe: and the named flags are still reported alongside it',
+        `got ${s.flagsNamed.join(',')}`,
+      );
+
+      // The half that decides whether this feature is worth having: reporting must
+      // not have replaced parsing. A reader that refused to answer for a damaged
+      // file could not answer "is this file damaged?" either.
+      check(
+        s.readable && s.sections.length > 0 && s.defined > 0 && s.textAddr !== null,
+        'describe: a damaged file still parses — problems are reported alongside, not instead',
+        `readable=${s.readable} sections=${s.sections.length} defined=${s.defined}`,
+      );
+      check(
+        s.abnormalities.every((a) => typeof a.kind === 'string' && typeof a.detail === 'string'
+          && a.kind.length > 0 && a.detail.length > 0),
+        'describe: every abnormality carries a machine-readable kind and a human explanation',
+      );
+
+      const dOut = run('describe.mjs', [dmg.path]);
+      check(
+        /abnormality/.test(dOut.stdout) && /load-commands-truncated/.test(dOut.stdout),
+        'describe.mjs: prints the abnormalities rather than hiding them',
+        dOut.stdout.split('\n').filter((l) => /abnormality|truncated/.test(l)).join(' | ').slice(0, 90),
+      );
+      check(
+        /4 defined/.test(dOut.stdout),
+        'describe.mjs: and still answers the original question about the same file',
+        dOut.stdout.split('\n').filter((l) => /defined/.test(l)).join(' | ').slice(0, 80),
+      );
+      const dJson = run('describe.mjs', ['--json', dmg.path]);
+      check(
+        dJson.code === 0 && /"abnormalities":\s*\[/.test(dJson.stdout),
+        'describe.mjs --json: abnormalities are in the envelope and the exit is still success',
+        `exit ${dJson.code}`,
+      );
+    }
+
+    // ---- the decode helpers directly, for the cases no fixture can hold
+    //
+    // Two shapes are unreachable from a built fixture: the documented 24-byte
+    // LC_MAIN (never observed on this machine, which is why it is encoded by
+    // hand), and a version whose A component needs more than 10 bits to be
+    // *convincing* rather than merely large.
+    {
+      const { decodeHeaderFlags, decodeSourceVersion, decodeSectionFlags } =
+        await import('../src/macho.mjs');
+
+      // The 24-byte form. If `cmdsize` were ignored and 24 bytes always read, this
+      // would be the only thing that could catch it — every real binary is 16.
+      const packed = (BigInt(0x1234) << 40n) | (5n << 30n) | (6n << 20n) | (7n << 10n) | 8n;
+      const v = decodeSourceVersion(packed);
+      check(
+        v.a === 0x1234n && v.b === 5n && v.c === 6n && v.d === 7n && v.e === 8n
+          && v.text === '4660.5.6.7.8',
+        'decodeSourceVersion: every component of the a24.b10.c10.d10.e10 packing',
+        v.text,
+      );
+      // Five equal 10-bit fields — the plausible wrong reading — must give a
+      // *different* answer, or the distinction this fixture pins does not matter.
+      const equalTensA = (packed >> 40n) & 0x3ffn;
+      check(
+        equalTensA !== v.a,
+        'decodeSourceVersion: the packing is not five equal 10-bit fields',
+        `correct A=0x${v.a.toString(16)}, equal-width reading would give ${equalTensA}`,
+      );
+      check(
+        decodeSourceVersion(0n).text === '0.0.0.0.0',
+        'decodeSourceVersion: an absent version decodes to zeroes rather than throwing',
+      );
+
+      // The unnamed header flag gap, and the bit above it that does have a name.
+      const unnamed = decodeHeaderFlags(0x20000000);
+      check(
+        unnamed.names.length === 0 && unnamed.unknown === 0x20000000,
+        'decodeHeaderFlags: an unnamed bit is reported as unknown, not dropped',
+        `unknown=0x${unnamed.unknown.toString(16)}`,
+      );
+      const topBit = decodeHeaderFlags(0x80000000);
+      check(
+        topBit.names.join(',') === 'MH_DYLIB_IN_CACHE' && topBit.unknown === 0,
+        'decodeHeaderFlags: the highest bit has a name, so it is not mistaken for unknown',
+        topBit.names.join(','),
+      );
+      check(
+        decodeHeaderFlags(0).names.length === 0 && decodeHeaderFlags(0).unknown === 0,
+        'decodeHeaderFlags: an unset word yields neither names nor unknown bits',
+      );
+
+      // Type and attributes must never overlap, in either direction.
+      const mixed = decodeSectionFlags(0x00000002 | 0x80000000 | 0x00000400);
+      check(
+        mixed.type === 'S_CSTRING_LITERALS'
+          && mixed.attributes.join(',') === 'S_ATTR_PURE_INSTRUCTIONS,S_ATTR_SOME_INSTRUCTIONS'
+          && mixed.attributesUnknown === 0,
+        'decodeSectionFlags: type and attributes are read from disjoint parts of one word',
+        `type=${mixed.type} attrs=[${mixed.attributes.join(',')}]`,
+      );
+      const undefType = decodeSectionFlags(0xff);
+      check(
+        undefType.type.startsWith('S_UNKNOWN_0x') && undefType.typeRaw === 0xff,
+        'decodeSectionFlags: an undefined section type is named as unknown rather than guessed',
+        undefType.type,
+      );
+    }
+  }
+
   // A lone Mach-O path is the binary, not a pattern.
   //
   // `sym <pattern> [binary]` read `sym /path/to/Binary` as the *pattern*, fell

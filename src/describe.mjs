@@ -42,7 +42,7 @@ const HELP = [
   `  then ${FALLBACK_TARGET}`,
   '',
   'options:',
-  '  --sections        list every section: segment, name, address, size, flags',
+  '  --sections        list every section: segment, name, address, size, type',
   '  --segments        list every segment: name, vm range, file range',
   '  --loads           list every load command by name and size',
   '  --arch=<name>     read one slice of a universal binary (x86_64, arm64, arm64e, arm64_32, ppc, ppc64, arm, i386)',
@@ -123,7 +123,55 @@ for (const s of r.slices) {
   // Printed on its own line because it is long and it is per-slice, and inline
   // it would push the `__text` address out of view on a narrow terminal.
   if (s.uuid) console.log(`           uuid ${s.uuid}`);
+
+  // The header `flags`, named. `MH_PIE` and `MH_TWOLEVEL` are the two a reader
+  // actually acts on — they decide whether the binary is position-independent and
+  // whether its imports are two-level namespaced — and neither is visible as a
+  // number. A bit the table cannot name is printed on its own line rather than
+  // folded into the list, because "unrecognised" and "not set" are different
+  // claims and only one of them is true.
+  if (s.flagsNamed.length) {
+    console.log(`           flags ${s.flagsNamed.join(' ')}`);
+  }
+  if (s.flagsUnknown) {
+    console.log(`           flags 0x${s.flagsUnknown.toString(16)} set but unnamed in <mach-o/loader.h> — newer than this reader, or not a header we can trust`);
+  }
+
+  // `LC_MAIN`. The raw offset is printed and no address is, deliberately: the
+  // header calls `entryoff` a `__TEXT` offset, and on the binaries measured that
+  // is not what it is — it lands past `__TEXT`, in `__LINKEDIT`. See
+  // `resolveEntryPoint` for the measurements. Printing `__TEXT.vmaddr + entryoff`
+  // would produce a plausible address that is wrong, which is worse than none.
+  if (s.entryPoint) {
+    const stack = s.entryPoint.stacksize === null
+      ? ''
+      : ` stack ${s.entryPoint.stacksize}`;
+    console.log(`           entry entryoff ${s.entryPoint.entryoff}${stack}  (no address derived; see --json entryPoint.note)`);
+  }
+
+  // `LC_RPATH`. `@rpath` resolution walks these in order, so the order is the
+  // meaning and the list is printed in the order the binary declares it.
+  for (const rp of s.rpaths) console.log(`           rpath ${rp}`);
+
+  if (s.sourceVersion) {
+    console.log(`           source version ${s.sourceVersion.text}`);
+  }
+
   if (s.note) console.log(`           note: ${s.note}`);
+}
+
+// Abnormalities, after every slice rather than under one.
+//
+// Reported alongside the parse and never instead of it: a damaged file still
+// answers every other question, and conflating "this file is broken" with "this
+// file does not have that" is the mistake `a2o` was fixed for. A healthy binary
+// reports none, so the section is silent in the common case rather than printing
+// "0 abnormalities" on every run.
+const abnormal = r.slices.flatMap((s) => s.abnormalities.map((a) => ({ arch: s.arch, ...a })));
+if (abnormal.length) {
+  console.log('');
+  console.log(`${abnormal.length} abnormality(ies) — the file parsed, but these parts do not add up:`);
+  for (const a of abnormal) console.log(`  ${a.arch}  ${a.kind}\n      ${a.detail}`);
 }
 
 const hex = (v) => `0x${v.toString(16)}`;
@@ -158,9 +206,20 @@ if (flags.has('sections')) {
       // second copy of that predicate is a second thing to keep correct, and
       // this project has already shipped a bug from exactly that.
       const kind = isCodeSection(sec) ? 'code' : 'data';
+      // The section *type* beside it, because `code`/`data` and the type answer
+      // different questions and a section can be both at once: `__text` is `code`
+      // because of `S_ATTR_PURE_INSTRUCTIONS`, and `S_REGULAR` because that is
+      // what its type byte says. Reading only the attributes calls a `__cstring`
+      // and a `__symbol_stub` both "data", which is true and useless.
+      const type = sec.type || `0x${(sec.flags & 0xff).toString(16)}`;
+      // An attribute or type bit with no name in the header is appended rather
+      // than hidden, for the same reason the header-flag line above is.
+      const odd = sec.attributesUnknown
+        ? `  +0x${sec.attributesUnknown.toString(16)}?`
+        : '';
       console.log(
         `  ${(sec.segname + ',' + sec.sectname).padEnd(34)} ${hex(sec.addr)}..${hex(sec.addr + BigInt(sec.size))}` +
-          `  ${count(sec.size).padStart(12)}  file ${String(sec.offset).padStart(9)}  ${kind}`,
+          `  ${count(sec.size).padStart(12)}  file ${String(sec.offset).padStart(9)}  ${kind}  ${type}${odd}`,
       );
     }
   }

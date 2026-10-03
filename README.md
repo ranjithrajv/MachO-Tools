@@ -89,7 +89,7 @@ means. That is not a footnote: see
 
 | | |
 |---|---|
-| `describe.mjs` | What is in this file? Every slice, architecture, extent, **platform** (ios / macos / tvos…), **filetype**, symbol counts, where `__TEXT` starts, the build's **UUID**, and whether it is **encrypted** — plus, with `--sections`, `--segments` or `--loads`, every section, segment and load command by name |
+| `describe.mjs` | What is in this file? Every slice, architecture, extent, **platform** (ios / macos / tvos…), **filetype**, symbol counts, where `__TEXT` starts, the build's **UUID**, the header's **flags** (`MH_PIE`, `MH_TWOLEVEL`, …), each section's **type** and **attributes**, the **entry point**, **rpaths** and **source version** — plus, with `--sections`, `--segments` or `--loads`, every section, segment and load command by name. Reports **abnormalities** when a header disagrees with the file |
 | `sym.mjs` | Search a symbol table by substring, or by regex with `--regex`. Imports marked rather than shown as `0x0` |
 | `symlookup.mjs` | Which function contains this vaddr? Reads symbols directly, because `nm` on a large universal binary is unusable |
 | `findcall.mjs` | Direct `call`/`jmp` xrefs to an address — or `--list` for the distinct targets a binary calls |
@@ -260,6 +260,107 @@ so a reader that walks sections without asking whether they occupy bytes resolve
 the Mach-O header into `__bss` — in `go`, a prefix of the file measured in
   hundred-odd kilobytes. The `zerofill` fixture exists to keep that fixed, and
   reverting the fix fails the suite against it.
+
+### A header is a set of claims, and some of them are false
+
+A Mach-O header states things about the file, and a reader's job is to report
+those claims faithfully — including when it cannot make sense of one. `describe`
+now decodes the header's `flags` word into names, and each section's `flags` into
+its **type** and its **attributes**, which are disjoint halves of the same 32-bit
+field:
+
+```sh
+$ node src/describe.mjs --sections test/fixtures/meta.macho
+  x86_64   file 0..879  64-bit  4 defined / 6 symbols  1 code section(s) __text 0x100000170+320
+           flags MH_NOUNDEFS MH_DYLDLINK MH_TWOLEVEL MH_PIE
+           entry entryoff 64  (no address derived; see --json entryPoint.note)
+           rpath @executable_path/../Frameworks
+           source version 4660.12.4.5.6
+
+sections in x86_64:
+  __TEXT,__text                      0x100000170..0x1000002b0           320  file       368  code  S_REGULAR
+  __TEXT,__data                      0x1000002b0..0x1000002d0            32  file       688  data  S_CSTRING_LITERALS
+```
+
+`code`/`data` comes from the attributes and the type is a separate fact, and a
+section is routinely both at once: `__text` is `code` because of
+`S_ATTR_PURE_INSTRUCTIONS` and `S_REGULAR` because that is what its type byte
+says. Reading only the attributes calls a `__cstring` and a `__symbol_stub` both
+"data", which is true and useless.
+
+Two details here are less obvious than they look, and both were found by measuring
+the machine rather than by reading the header:
+
+- **`MH_*` is more than the 28 flags usually quoted.** Four are newer
+  (`MH_NLIST_OUTOFSYNC_WITH_DYLDINFO`, `MH_SIM_SUPPORT`, `MH_IMPLICIT_PAGEZERO`,
+  `MH_DYLIB_IN_CACHE`), and bit `0x20000000` has *no* name in the header at all. A
+  table that stopped at `MH_APP_EXTENSION_SAFE` would report four real flags as
+  unknown on real binaries — which is exactly the false alarm the abnormality check
+  must not be able to raise. Unrecognised bits are reported as their own value,
+  never folded in with the absent ones.
+- **`LC_SOURCE_VERSION` is not five equal fields.** It is packed `a24.b10.c10.d10.e10`
+  — `A` is 24 bits and the rest are 10. Decoding it as five 10-bit fields is the
+  obvious reading, silently mangles `A`, and still produces a version that looks
+  plausible.
+
+### Abnormalities: reported alongside the parse, never instead of it
+
+A malformed file still answers every other question. `describe` reports what is
+wrong *and* what it could genuinely read, because conflating "this file is broken"
+with "this file does not have that" is the same mistake `zerofill` above exists to
+avoid:
+
+```sh
+$ node src/describe.mjs test/fixtures/damaged.macho
+  x86_64   file 0..799  64-bit  4 defined / 6 symbols  1 code section(s) __text 0x100000120+320
+           flags MH_NOUNDEFS MH_DYLDLINK MH_TWOLEVEL MH_PIE
+           flags 0x20000000 set but unnamed in <mach-o/loader.h> — newer than this reader, or not a header we can trust
+
+3 abnormality(ies) — the file parsed, but these parts do not add up:
+  x86_64  unknown-header-flags
+      header sets flag bits with no name in <mach-o/loader.h>: 0x20000000
+  x86_64  load-commands-truncated
+      header declares 99 load command(s), only 3 were readable — the segment, section and symbol tables below may be incomplete
+  x86_64  strtab-past-slice-end
+      LC_SYMTAB claims a string table in bytes 736..2147484383, past the end of the slice at 799
+```
+
+Each is decidable from the bytes alone, and each would change a tool's answer:
+unnameable flag bits; fewer readable load commands than `ncmds` claims; a section,
+segment, symbol table or string table reaching past its slice; the symbol and
+string tables overlapping; an `LC_MAIN` outside `__TEXT`.
+
+Two are deliberately **not** checked, which is as much a part of the contract:
+
+- **Unknown load commands.** Already surfaced by `describe --loads` as a number
+  rather than a name. That is this project's chosen line for "present but not
+  understood", and listing them a second time as damage would grade an
+  unfamiliar-but-valid command as broken.
+- **`LC_MAIN` pointing outside `__TEXT`.** That is the normal state of a dyld
+  shared-cache stub — `/bin/ls` and most of `/bin` are stubs — and measurement
+  found it on a fully-symbolled 113 MB `node` too. A warning that is always true
+  teaches a reader to skip warnings.
+
+### `LC_MAIN`: the raw offset, and no address
+
+`describe` reports `LC_MAIN`'s `entryoff` and deliberately reports **no address**
+for it. `<mach-o/loader.h>` calls the field a `__TEXT` offset, and that is not
+what it is:
+
+- on a fully-symbolled 113 MB arm64 `node`, `entryoff` is 88,241,840 while `__TEXT`
+  spans file bytes `0..85,082,112` — it is *past the end of `__TEXT`*, and read as
+  a slice-relative offset it resolves into `__LINKEDIT`, matching no symbol under
+  any of the three plausible bases;
+- every one of the 672 `LC_MAIN`s measured on this machine declares **`cmdsize`
+  16**, not the 24 the header documents. In that form there is no `stacksize`, and
+  the upper 32 bits of `entryoff` are **uninitialised** — zero on arm64, and on the
+  x86_64 stubs whatever followed in the buffer. Reading the field as a `uint64`
+  reported `/bin/ls`'s entry offset as 103,079,241,432.
+
+So the reader takes the width from the command's own `cmdsize`, discloses the raw
+upper half as `rawHigh32`, and returns `vaddr: null`. Publishing
+`__TEXT.vmaddr + entryoff` would produce an address of exactly the shape a caller
+feeds to `symlookup` — and it would be wrong on essentially every binary.
 
 ## When to use this, and when not to
 
@@ -525,7 +626,7 @@ longer contain capital letters"* — and npm's own validator reported
 
 | Export | Returns |
 |---|---|
-| `describe(path)` | Every slice: architecture, extent, symbol counts, `__TEXT` bounds, **`uuid`**, and the full `segments` / `sections` / `loadCommands` lists |
+| `describe(path)` | Every slice: architecture, extent, symbol counts, `__TEXT` bounds, **`uuid`**, decoded header **`flags`**, **`entryPoint`**, **`rpaths`**, **`sourceVersion`**, **`abnormalities`**, and the full `segments` / `sections` / `loadCommands` lists |
 | `searchSymbols(path, pattern, opts)` | Symbol search. `mode: 'substring'` (default) or `'regex'`; `definedOnly` and `dedupe` default true |
 | `lookupAddress(path, vaddr, opts)` | The function containing an address |
 | `findCalls(path, vaddr, opts)` | Direct call/jmp sites targeting an address |

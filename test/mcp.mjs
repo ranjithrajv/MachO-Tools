@@ -920,7 +920,84 @@ console.log('\nmcp: the protocol\n');
   }
 }
 
-/* ---- 11. the stdout guard is real ----------------------------------- */
+/* ---- 11. the header fields reach a client, on the same contract -------- */
+
+{
+  // A field the CLI prints but MCP drops is a contract held by one door and not
+  // the other, which is the project's own word for not a contract. The header
+  // facts and the abnormality report are exactly where that would show up: both
+  // are per-slice additions to `describe`, and an agent has no other way to see
+  // them than this payload.
+  const metaBin = path.join(FIXTURES, 'meta.macho');
+  const dmgBin = path.join(FIXTURES, 'damaged.macho');
+  if (!fs.existsSync(metaBin) || !fs.existsSync(dmgBin)) {
+    skip({ name: 'header fields over MCP', why: 'the meta/damaged fixtures are missing — run npm run test:fixtures' });
+  } else {
+    const r = await session([
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'macho-describe', arguments: { binary: metaBin }, _meta: meta() } },
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'macho-describe', arguments: { binary: dmgBin }, _meta: meta() } },
+    ], { expectLines: 2 });
+    const s = parseStream(r.out);
+    const good = byId(s.msgs, 1)?.result;
+    const bad = byId(s.msgs, 2)?.result;
+    const g = good?.structuredContent?.data?.slices?.[0];
+    const b = bad?.structuredContent?.data?.slices?.[0];
+
+    check(
+      Array.isArray(g?.flagsNamed) && g.flagsNamed.includes('MH_PIE') && g.flagsUnknown === 0,
+      'over MCP: the decoded header flags reach the client',
+      JSON.stringify(g?.flagsNamed),
+    );
+    check(
+      g?.sections?.some((x) => x.sectname === '__data' && x.type === 'S_CSTRING_LITERALS'),
+      'over MCP: a section type reaches the client',
+      g?.sections?.map((x) => `${x.sectname}=${x.type}`).join(' '),
+    );
+    check(
+      Array.isArray(g?.rpaths) && g.rpaths[0] === '@executable_path/../Frameworks'
+        && g?.sourceVersion?.text === '4660.12.4.5.6',
+      'over MCP: LC_RPATH and LC_SOURCE_VERSION reach the client',
+      `rpaths=${JSON.stringify(g?.rpaths)} version=${g?.sourceVersion?.text}`,
+    );
+    // The refusal must survive serialisation, or an agent will read a null and
+    // compute `__TEXT.vmaddr + entryoff` itself — the one thing the reader declines
+    // to do because the sum is wrong.
+    check(
+      g?.entryPoint && g.entryPoint.vaddr === null && /no address is derived/.test(g.entryPoint.note || ''),
+      'over MCP: the entry point arrives with no invented address',
+      `vaddr=${JSON.stringify(g?.entryPoint?.vaddr)}`,
+    );
+    check(
+      Array.isArray(g?.abnormalities) && g.abnormalities.length === 0,
+      'over MCP: a healthy binary reports an empty abnormality list, not a missing field',
+      JSON.stringify(g?.abnormalities),
+    );
+
+    // And the damaged half. It has to arrive as data on a *successful* call:
+    // a client that cannot see the report cannot warn the user.
+    check(
+      bad?.isError === false && Array.isArray(b?.abnormalities) && b.abnormalities.length === 3,
+      'over MCP: abnormalities arrive on a successful call, not as an error',
+      `isError=${bad?.isError} kinds=${b?.abnormalities?.map((a) => a.kind).join(',')}`,
+    );
+    check(
+      b?.flagsUnknown === 0x20000000 && b?.flagsNamed?.length === 4,
+      'over MCP: an unnamed flag bit is reported beside the named ones',
+      `unknown=0x${b?.flagsUnknown?.toString(16)}`,
+    );
+    check(
+      b?.sections?.length > 0 && b?.defined > 0,
+      'over MCP: a damaged file still reports what could be read',
+      `sections=${b?.sections?.length} defined=${b?.defined}`,
+    );
+    check(
+      /abnormalit/i.test(bad?.content?.[0]?.text || ''),
+      'and the text block mentions them, so a model reading prose sees them too',
+    );
+  }
+}
+
+/* ---- 12. the stdout guard is real ----------------------------------- */
 
 {
   const { guardStdout, stdoutStrayWrites } = await import('../src/mcp.mjs');

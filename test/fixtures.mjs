@@ -77,6 +77,32 @@ const LC_SEGMENT = 0x1;
 const LC_SEGMENT_64 = 0x19;
 const LC_SYMTAB = 0x2;
 const LC_UUID = 0x1b;
+const LC_RPATH = 0x1c;
+const LC_MAIN = 0x29;
+const LC_SOURCE_VERSION = 0x2b;
+
+/**
+ * Header `flags` bits, for the fixture that exercises flag decoding.
+ *
+ * `MH_NOUNDEFS | MH_DYLDLINK | MH_TWOLEVEL | MH_PIE` — what a real dynamically
+ * linked executable sets, so the fixture's header is a plausible one rather than
+ * a set of bits chosen only to be distinguishable.
+ */
+const MH_NOUNDEFS = 0x1;
+const MH_DYLDLINK = 0x4;
+const MH_TWOLEVEL = 0x80;
+const MH_PIE = 0x200000;
+const FIXTURE_MH_FLAGS = MH_NOUNDEFS | MH_DYLDLINK | MH_TWOLEVEL | MH_PIE;
+
+/**
+ * A header flag bit with *no name* in `<mach-o/loader.h>`.
+ *
+ * 0x20000000 is the gap between `MH_APP_EXTENSION_SAFE` (0x02000000) and
+ * `MH_DYLIB_IN_CACHE` (0x80000000) — the header assigns no bit there. The damaged
+ * fixture sets it so the reader's "unrecognised flag" path is reachable from a
+ * built binary rather than only from a machine that happens to have a new OS.
+ */
+const MH_UNNAMED_BIT = 0x20000000;
 
 /**
  * The UUID planted in `stripped.macho`, so the expected value in an assertion is
@@ -94,8 +120,35 @@ const N_SECT = 0x0e;      // defined
 const N_EXT = 0x01;       // external
 
 const S_REGULAR = 0x0;
+const S_CSTRING_LITERALS = 0x2;
 const S_ATTR_PURE_INSTRUCTIONS = 0x80000000;
 const S_ATTR_SOME_INSTRUCTIONS = 0x00000400;
+const S_ATTR_DEBUG = 0x02000000;
+
+/**
+ * `S_8BYTE_LITERALS` — the section *type*, in the low byte of `flags`.
+ *
+ * Present only as a named constant for the reason described on the `__text`
+ * default below: `textFlags` used to be written `S_ATTR_PURE_INSTRUCTIONS | 0x4`,
+ * and `0x4` in the low byte is this type, not an attribute. The fixtures all
+ * described `__text` as a section of 8-byte literals and nothing noticed, because
+ * `S_ATTR_PURE_INSTRUCTIONS` alone was enough for `isCodeSection` and nothing read
+ * the type. Spelling both constants out is what makes the two halves of the word
+ * impossible to confuse again.
+ */
+const S_8BYTE_LITERALS = 0x04;
+
+/**
+ * The header `flags` every fixture but the two new ones carries.
+ *
+ * Previously this was `S_ATTR_PURE_INSTRUCTIONS` — a *section* attribute constant
+ * written into the *header's* flags word, which is a category error that happened
+ * to produce a legal file (0x80000000 is a real header bit, `MH_DYLIB_IN_CACHE`).
+ * Nothing asserted on it, so it went unnoticed; with the header `flags` now being
+ * read and named, writing a section constant there would have made every fixture
+ * claim to be a cached dylib. A real executable's flags are used instead.
+ */
+const DEFAULT_MH_FLAGS = MH_NOUNDEFS | MH_DYLDLINK | MH_TWOLEVEL | MH_PIE;
 
 const VMADDR_BASE = 0x100000000n;
 
@@ -160,11 +213,14 @@ const textVaddr = (textOffset, base = VMADDR_BASE) => base + BigInt(textOffset);
  * 180,760 bytes of a real binary, and offset 0x1000 — the first byte of `__text`
  * — comes back as being inside `__bss`.
  */
-function thinMachO({ cputype, cpusubtype = 3, text, data, dataFlags = S_REGULAR, symbols, textFlags = S_ATTR_PURE_INSTRUCTIONS | 0x4, zerofill = null, bits = 64, base = VMADDR_BASE, uuid = null }) {
+function thinMachO({ cputype, cpusubtype = 3, text, data, dataFlags = S_REGULAR, symbols, textFlags = S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS, zerofill = null, bits = 64, base = VMADDR_BASE, uuid = null, flags = DEFAULT_MH_FLAGS, extraCommands = [] }) {
   const segname = '__TEXT';
   const is64 = bits === 64;
   const nsects = zerofill ? 3 : 2;
-  const ncmds = uuid ? 3 : 2;
+  // Every appended command counts towards `ncmds`, which is the count the reader
+  // uses to decide how far to walk. Understating it would make the walk stop early
+  // and silently drop the commands after the gap — so it is derived, never restated.
+  const ncmds = 2 + (uuid ? 1 : 0) + extraCommands.length;
   // The three sizes that differ between the two forms. A 32-bit Mach-O has a
   // 28-byte mach_header, an `LC_SEGMENT` (not `_64`) whose own header is 56 bytes
   // with `nsects` at offset 48, and 68-byte `section` entries — so it is not the
@@ -178,7 +234,8 @@ function thinMachO({ cputype, cpusubtype = 3, text, data, dataFlags = S_REGULAR,
   // Unlike everything else in this header it does not vary with the word size,
   // because it carries a fixed-size byte string rather than an address.
   const uuidCmdSize = uuid ? 24 : 0;
-  const loadCommandsSize = segCmdSize + symtabCmdSize + uuidCmdSize;
+  const extraSize = extraCommands.reduce((n, c) => n + c.length, 0);
+  const loadCommandsSize = segCmdSize + symtabCmdSize + uuidCmdSize + extraSize;
   // `nlist` is 16 bytes in the 64-bit form and 12 in the 32-bit one, which moves
   // the string table and therefore every offset after it.
   const nlistSize = is64 ? 16 : 12;
@@ -228,7 +285,7 @@ function thinMachO({ cputype, cpusubtype = 3, text, data, dataFlags = S_REGULAR,
   buf.writeUInt32LE(2, 12);                 // filetype: MH_EXECUTE
   buf.writeUInt32LE(ncmds, 16);
   buf.writeUInt32LE(loadCommandsSize, 20);
-  buf.writeUInt32LE(S_ATTR_PURE_INSTRUCTIONS, 24); // flags
+  buf.writeUInt32LE(flags >>> 0, 24);
 
   // ---- LC_SEGMENT / LC_SEGMENT_64
   let o = headerSize;
@@ -391,6 +448,30 @@ function thinMachO({ cputype, cpusubtype = 3, text, data, dataFlags = S_REGULAR,
     raw.copy(buf, o + 8);
   }
 
+  // ---- any extra load commands, in the order given
+  //
+  // Appended *after* LC_UUID rather than in a fixed slot, so a reader that
+  // assumed a command order would have to be reading each one at its own declared
+  // offset to get through them. `cmdsize` is taken from each buffer rather than
+  // recomputed here: the whole class of bug this corpus exists for is a reader and
+  // its fixture disagreeing about a command's length because one of them computed
+  // it differently.
+  o = headerSize + segCmdSize + symtabCmdSize + uuidCmdSize;
+  for (const cmd of extraCommands) {
+    // Assert the buffer agrees with itself before trusting it — a command whose
+    // declared `cmdsize` does not match its length would desynchronise the walk
+    // for every command after it, which is a far more confusing failure than a
+    // build-time error here.
+    const declared = cmd.readUInt32LE(4);
+    if (declared !== cmd.length) {
+      throw new Error(
+        `extra load command 0x${cmd.readUInt32LE(0).toString(16)} declares cmdsize ${declared} but is ${cmd.length} bytes`,
+      );
+    }
+    cmd.copy(buf, o);
+    o += cmd.length;
+  }
+
   text.copy(buf, textOffset);
   data.copy(buf, dataOffset);
   nlist.copy(buf, symtabOffset);
@@ -466,6 +547,100 @@ function arm64Ret() {
   const b = Buffer.alloc(4);
   b.writeUInt32LE(0xd65f03c0, 0);
   return b;
+}
+
+/* ---- load-command encoders --------------------------------------- */
+
+/**
+ * `LC_MAIN` in the **16-byte** form — the one that actually ships.
+ *
+ * `<mach-o/loader.h>` documents `struct entry_point_command` as `cmdsize` 24,
+ * with `entryoff` and `stacksize` both `uint64_t`. Every LC_MAIN measured on the
+ * machine that generated this corpus — 672 slices across /bin, /usr/bin and the
+ * system frameworks — declares `cmdsize` **16**: `entryoff` with no `stacksize`
+ * after it.
+ *
+ * So this encoder writes the 16-byte form and, crucially, puts **uninitialised
+ * bytes in the upper half** of `entryoff` — 0x18 here, matching what the x86_64
+ * slices of /bin/ls, /bin/cat and /bin/cp actually contain. That is the whole
+ * reason the fixture exists: a reader that reads a fixed 24 bytes gets the *next*
+ * load command's header as `stacksize`, and one that reads 8 bytes at offset 8
+ * without consulting `cmdsize` reports `entryoff` as 0x18000000 + the real
+ * offset. Both results are plausible numbers and both are wrong.
+ *
+ * `garbageHigh` is a parameter so the test can also assert the *clean* case, where
+ * the upper half happens to be zero and a 64-bit read would accidentally be right
+ * — which is the condition that hides the bug on arm64.
+ */
+function lcMain16(entryoff, garbageHigh = 0x18) {
+  const b = Buffer.alloc(16);
+  b.writeUInt32LE(LC_MAIN, 0);
+  b.writeUInt32LE(16, 4);
+  b.writeUInt32LE(entryoff >>> 0, 8);
+  b.writeUInt32LE(garbageHigh >>> 0, 12);
+  return b;
+}
+
+/**
+ * `LC_MAIN` in the documented **24-byte** form, with a real 64-bit `entryoff`
+ * and a `stacksize`.
+ *
+ * Never observed on this machine, so it cannot come from a system binary — which
+ * is precisely why it is built here. A reader that took `cmdsize` as always 16
+ * would pass every real binary in the corpus and fail this one, and this is the
+ * only fixture that can tell it.
+ */
+function lcMain24(entryoff, stacksize) {
+  const b = Buffer.alloc(24);
+  b.writeUInt32LE(LC_MAIN, 0);
+  b.writeUInt32LE(24, 4);
+  b.writeBigUInt64LE(BigInt(entryoff), 8);
+  b.writeBigUInt64LE(BigInt(stacksize), 16);
+  return b;
+}
+
+/**
+ * `LC_RPATH`, whose payload is an `lc_str` — an **offset from the start of this
+ * command**, not a string stored inline.
+ *
+ * The 12-byte header is `cmd`, `cmdsize`, `path.offset`, and the string follows.
+ * `cmdsize` covers the whole thing including the terminator, and real linkers pad
+ * the total to an 8-byte boundary, so the padding is reproduced here: a fixture
+ * that omitted it would be a *different* layout from every real binary, and would
+ * let a reader that ignored `cmdsize` pass.
+ */
+function lcRpath(path) {
+  const str = Buffer.from(path, 'latin1');
+  const total = Math.ceil((12 + str.length + 1) / 8) * 8;
+  const b = Buffer.alloc(total);
+  b.writeUInt32LE(LC_RPATH, 0);
+  b.writeUInt32LE(total, 4);
+  b.writeUInt32LE(12, 8);   // the offset, relative to this command
+  str.copy(b, 12);
+  return b;
+}
+
+/**
+ * `LC_SOURCE_VERSION`, packed `a24.b10.c10.d10.e10`.
+ *
+ * The field widths are unequal and that is the point: `A` occupies bits 40..63 and
+ * each of `B`..`E` is 10 bits. Decoding it as five equal 10-bit fields — the
+ * obvious reading — silently mangles a real `A`, because `A << 40` lands entirely
+ * in bits the five-equal-fields version never looks at.
+ *
+ * The values chosen make the error unmissable rather than subtle: `A` is
+ * 0x1234 (4660), far outside what ten bits can hold, so a decoder that truncates
+ * reports `A` as 0 while the rest still looks plausible.
+ */
+function lcSourceVersion(a, b, c, d, e) {
+  const buf = Buffer.alloc(16);
+  buf.writeUInt32LE(LC_SOURCE_VERSION, 0);
+  buf.writeUInt32LE(16, 4);
+  const packed =
+    (BigInt(a) << 40n) | (BigInt(b) << 30n) | (BigInt(c) << 20n)
+    | (BigInt(d) << 10n) | BigInt(e);
+  buf.writeBigUInt64LE(packed, 8);
+  return buf;
 }
 
 /* ------------------------------------------------------------------ *
@@ -885,6 +1060,127 @@ function populatedFixture() {
   };
 }
 
+/**
+ * The fixture for everything the *header* says about itself.
+ *
+ * One binary carrying all four of the newly-read properties, because they are
+ * cheap to assert together and expensive to assert separately — and because a
+ * reader that got the load-command *layout* wrong would misreport all of them at
+ * once, which is a single clear failure rather than four confusing ones.
+ *
+ *   - header `flags`, decoded into names;
+ *   - a section whose `flags` carry both a *type* (`S_CSTRING_LITERALS`) and a
+ *     rarely-set *attribute* (`S_ATTR_DEBUG`), so the two halves of one word are
+ *     told apart. These are disjoint fields — type is the low 8 bits, attributes
+ *     the top 24 — and a reader that masked the wrong half would report `0x2` as
+ *     an unknown *attribute* on every C-string section in every binary;
+ *   - `LC_MAIN` in its 16-byte form, with uninitialised upper bits planted;
+ *   - `LC_RPATH`, whose payload is an offset rather than an inline string;
+ *   - `LC_SOURCE_VERSION`, packed `a24.b10.c10.d10.e10`.
+ *
+ * `A` is 0x1234 = 4660 in the source version, chosen because it cannot fit in ten
+ * bits: a decoder that treats all five fields as equal-width reports `A` as 0
+ * while `B`..`E` still look right, which is the kind of error that survives a
+ * casual look at the output.
+ *
+ * `dataFlags` sets a section type on `__data` without adding a section, so no
+ * offset in the file moves and every other fixture's arithmetic is untouched.
+ */
+function metaFixture() {
+  const RPATH = '@executable_path/../Frameworks';
+  const ENTRYOFF = 0x40;
+  const GARBAGE_HIGH = 0x18;
+  const VERSION = { a: 0x1234, b: 12, c: 4, d: 5, e: 6 };
+
+  const extra = [
+    lcMain16(ENTRYOFF, GARBAGE_HIGH),
+    lcRpath(RPATH),
+    lcSourceVersion(VERSION.a, VERSION.b, VERSION.c, VERSION.d, VERSION.e),
+  ];
+  // Derived from the buffers rather than written down, because `extraLoadcmds`
+  // shifts every address in the file: a restated total would be right today and
+  // wrong the moment a command's length changed, and the symptom would be
+  // `findcall` quietly reporting zero.
+  const extraLoadcmds = extra.reduce((n, c) => n + c.length, 0);
+
+  const c = codeFixture(CPU_X86_64, { extraLoadcmds });
+  const buf = thinMachO({
+    cputype: CPU_X86_64,
+    ...c,
+    flags: FIXTURE_MH_FLAGS,
+    dataFlags: S_CSTRING_LITERALS | S_ATTR_DEBUG,
+    extraCommands: extra,
+  });
+
+  return {
+    buf,
+    rpath: RPATH,
+    entryoff: ENTRYOFF,
+    entryoffHighGarbage: GARBAGE_HIGH,
+    sourceVersion: { ...VERSION, text: `${VERSION.a}.${VERSION.b}.${VERSION.c}.${VERSION.d}.${VERSION.e}` },
+    dataFlags: S_CSTRING_LITERALS | S_ATTR_DEBUG,
+    extraLoadcmds,
+    addresses: c.addresses,
+    // Stated here rather than imported from the reader's tables, for the reason
+    // the Mach-O constants at the top of this file are written out: the builder
+    // must be an independent witness, or a typo in a name would be invisible.
+    flags: FIXTURE_MH_FLAGS,
+    flagNames: ['MH_NOUNDEFS', 'MH_DYLDLINK', 'MH_TWOLEVEL', 'MH_PIE'],
+    // The order the commands were written in, which is the order the reader must
+    // report them in.
+    loadCommandNames: ['LC_SEGMENT_64', 'LC_SYMTAB', 'LC_MAIN', 'LC_RPATH', 'LC_SOURCE_VERSION'],
+  };
+}
+
+/**
+ * The fixture for a binary whose header lies about itself.
+ *
+ * Abnormality detection is the one feature in this package whose *subject* is a
+ * broken file, so it cannot be tested by any healthy fixture — and every real
+ * binary on a real machine is healthy. A check that only ever runs against good
+ * input is a check that has never been shown to work.
+ *
+ * Three independent defects are planted, each of which a reader must survive
+ * rather than crash on, and each of which is reported rather than acted on:
+ *
+ *   1. header `flags` sets bit 0x20000000, which `<mach-o/loader.h>` gives no
+ *      name to. Reachable on a real machine only by running a newer OS than the
+ *      reader was written against;
+ *   2. `ncmds` claims 97 more load commands than the file contains, so the walk
+ *      runs off the end of the list. This is what a truncated or tampered file
+ *      looks like, and it means the section and symbol tables may be incomplete —
+ *      which is the part a caller needs to be told;
+ *   3. `LC_SYMTAB` claims a string table of 2 GiB, far past the end of a file
+ *      that is a few hundred bytes long.
+ *
+ * Critically, `describe()` on this file still succeeds and still reports the
+ * symbols and sections it can genuinely read. That is the contract: a malformed
+ * file is reported *alongside* the parse, not instead of it, so "this binary is
+ * damaged" is never conflated with "this binary does not have that" — the same
+ * distinction `a2o` draws between zero-fill and unmapped.
+ */
+function damagedFixture() {
+  const c = codeFixture(CPU_X86_64);
+  const buf = thinMachO({ cputype: CPU_X86_64, ...c });
+  const realNcmds = buf.readUInt32LE(16);
+
+  // 1. An unnamed header flag bit, OR'd into a plausible set.
+  buf.writeUInt32LE((DEFAULT_MH_FLAGS | MH_UNNAMED_BIT) >>> 0, 24);
+
+  // 2. More load commands than exist. The reader stops when `cmdsize` is
+  //    implausibly small, so this terminates rather than running off the file —
+  //    which is exactly the outcome the truncation report describes.
+  buf.writeUInt32LE(realNcmds + 97, 16);
+
+  // 3. A string table reaching far past the end of the file. `LC_SYMTAB` is the
+  //    command right after the segment, at 32 + (72 + 80*2); `strsize` is its
+  //    fifth field, at +20.
+  const symtabCmd = 32 + (72 + 80 * 2);
+  buf.writeUInt32LE(0x7fffffff, symtabCmd + 20);
+
+  return { buf, realNcmds, addresses: c.addresses };
+}
+
 /* ------------------------------------------------------------------ *
  * verification
  * ------------------------------------------------------------------ */
@@ -928,6 +1224,32 @@ async function verify(files) {
       for (const s of d.slices) {
         expect(s.codeSections >= 1, `${name}/${s.arch}: at least one code section`);
         expect(s.textSize > 0, `${name}/${s.arch}: __text is non-empty`);
+        // Every fixture's `__text` must describe itself as S_REGULAR.
+        //
+        // This pins a bug that was sitting in this file the whole time. `__text`'s
+        // flags were written `S_ATTR_PURE_INSTRUCTIONS | 0x4`, and `0x4` in the low
+        // byte of a section's `flags` is `S_8BYTE_LITERALS` — a *type*, not an
+        // attribute. So every fixture claimed its code section was a section of
+        // 8-byte literals, and nothing caught it: `isCodeSection` was satisfied by
+        // `S_ATTR_PURE_INSTRUCTIONS` alone, so the call scan worked, and no tool
+        // read the type until section-flag decoding was added. The failure mode was
+        // invisible because the wrong bit was in a field nothing consulted.
+        //
+        // `meta` is the one fixture that deliberately sets a type, and it asserts
+        // its own below.
+        if (name !== 'meta') {
+          const text = s.sections.find((x) => x.sectname === '__text');
+          expect(
+            text?.type === 'S_REGULAR',
+            `${name}/${s.arch}: __text is S_REGULAR, not ${text?.type} (the low byte of flags is the section type)`,
+          );
+        }
+        // And no fixture but `damaged` should report an attribute it cannot name,
+        // which is what a reader masking the type byte as an attribute would do.
+        expect(
+          s.sections.every((x) => x.attributesUnknown === 0),
+          `${name}/${s.arch}: no section reports unknown attribute bits`,
+        );
       }
     }
     expect(isMachO(p), `${name}: magic bytes are a Mach-O`);
@@ -1259,6 +1581,131 @@ async function verify(files) {
     'universal: --list finds at least one destination',
   );
 
+  // The header-metadata fixture. Asserted here as well as in the suite, because a
+  // fixture that does not hold up is a broken instrument.
+  //
+  // The load-command *order* is part of the assertion, not decoration: the three
+  // new commands are appended after LC_UUID's slot, so a reader that assumed a
+  // fixed order would have to be reading each at its own declared `cmdsize` to get
+  // them all right.
+  {
+    const m = metaFixture();
+    const s = describe(files.meta).slices[0];
+    const exp = m;
+    expect(
+      s.loadCommands.map((c) => c.name).join(',') === exp.loadCommandNames.join(','),
+      `meta: names every load command in order (got ${s.loadCommands.map((c) => c.name).join(',')})`,
+    );
+    // Header flags: the names, and the absence of any unrecognised bit. The second
+    // is the half that matters — a table missing a real flag would report it as
+    // unknown on every binary the machine happens to have.
+    expect(
+      s.flagsNamed.join(',') === exp.flagNames.join(','),
+      `meta: decodes the header flags (got ${s.flagsNamed.join(',') || 'none'})`,
+    );
+    expect(
+      s.flagsUnknown === 0,
+      `meta: reports no unrecognised header flag bits (got 0x${s.flagsUnknown.toString(16)})`,
+    );
+    // Section flags: type in the low byte, attributes in the top 24, told apart.
+    const data = s.sections.find((x) => x.sectname === '__data');
+    expect(
+      data?.type === 'S_CSTRING_LITERALS',
+      `meta: __data's section type is read from the low byte (got ${data?.type})`,
+    );
+    expect(
+      data?.attributes.join(',') === 'S_ATTR_DEBUG',
+      `meta: __data's attribute is read from the top 24 bits (got ${data?.attributes.join(',') || 'none'})`,
+    );
+    // The bug this pins: the *type* byte must not be reported as an unknown
+    // attribute. `0x2` is S_CSTRING_LITERALS, and it lives below the attribute
+    // region, so a reader that masked with the complement of the named attribute
+    // bits instead of the region would call it an unknown attribute on this
+    // fixture and on every C-string section of every real binary.
+    expect(
+      data?.attributesUnknown === 0,
+      `meta: the section type is not mistaken for an unknown attribute (got 0x${data?.attributesUnknown.toString(16)})`,
+    );
+    // LC_RPATH. The path is behind an offset, so a reader that read eight bytes in
+    // as if they were the string would report a path made of the offset's own
+    // bytes — a value that looks like text and names no directory.
+    expect(
+      s.rpaths.length === 1 && s.rpaths[0] === exp.rpath,
+      `meta: reads the LC_RPATH path through its lc_str offset (got ${JSON.stringify(s.rpaths)})`,
+    );
+    // LC_MAIN, 16-byte form. `entryoff` must be the low 32 bits and the planted
+    // garbage in the upper half must not leak into the reported value.
+    expect(
+      s.entryPoint !== null && Number(s.entryPoint.entryoff) === exp.entryoff,
+      `meta: LC_MAIN.entryoff is the 32-bit value (got ${s.entryPoint?.entryoff})`,
+    );
+    expect(
+      s.entryPoint?.stacksize === null,
+      'meta: the 16-byte LC_MAIN reports no stacksize rather than reading the next command',
+    );
+    expect(
+      s.entryPoint?.cmdsize === 16,
+      `meta: LC_MAIN's declared cmdsize is reported (got ${s.entryPoint?.cmdsize})`,
+    );
+    // LC_SOURCE_VERSION, a24.b10.c10.d10.e10.
+    expect(
+      s.sourceVersion?.text === exp.sourceVersion.text,
+      `meta: LC_SOURCE_VERSION decodes as a24.b10.c10.d10.e10 (got ${s.sourceVersion?.text})`,
+    );
+    expect(
+      Number(s.sourceVersion?.a) === 0x1234,
+      `meta: the 24-bit A component survives (got ${s.sourceVersion?.a})`,
+    );
+    expect(
+      s.abnormalities.length === 0,
+      `meta: a well-formed binary reports no abnormalities (got ${s.abnormalities.map((a) => a.kind).join(',') || 'none'})`,
+    );
+    // The fixture must remain a working binary for every other tool, or the
+    // assertions above would be reached through a file the rest of the suite
+    // cannot read.
+    expect(
+      findCalls(files.meta, exp.addresses.target).count === 2,
+      'meta: the extra load commands did not break the call scan',
+    );
+    expect(
+      lookupAddress(files.meta, exp.addresses.target).function === 'target_fn',
+      'meta: symbols still resolve with three extra load commands present',
+    );
+  }
+
+  // The damaged fixture. Its whole purpose is the three reports below, so this is
+  // the assertion that proves the abnormality checks can actually fire.
+  {
+    const d = damagedFixture();
+    const s = describe(files.damaged).slices[0];
+    const kinds = s.abnormalities.map((a) => a.kind);
+
+    expect(
+      kinds.includes('unknown-header-flags'),
+      `damaged: reports the unnamed header flag bit (got ${kinds.join(',') || 'none'})`,
+    );
+    expect(
+      kinds.includes('load-commands-truncated'),
+      `damaged: reports the truncated load-command list (got ${kinds.join(',') || 'none'})`,
+    );
+    expect(
+      kinds.includes('strtab-past-slice-end'),
+      `damaged: reports the string table reaching past the end (got ${kinds.join(',') || 'none'})`,
+    );
+    // And the half that matters most: reporting must not have replaced parsing.
+    // A reader that refused to answer for a damaged file would be unable to
+    // answer the question "is this file damaged?" in the first place.
+    expect(
+      s.readable && s.sections.length > 0 && s.defined > 0,
+      `damaged: still parses — reporting is alongside the parse, not instead of it ` +
+        `(readable=${s.readable}, sections=${s.sections.length}, defined=${s.defined})`,
+    );
+    expect(
+      findCalls(files.damaged, d.addresses.target).count === 2,
+      'damaged: the call scan still works, because it reads bytes rather than trusting the header',
+    );
+  }
+
   // Literals.
   const lit = findLiteral(files.universal, 'FIXTURELITERAL');
   expect(lit.count === 2, `universal: the literal is in both slices (got ${lit.count})`);
@@ -1420,6 +1867,8 @@ export async function buildFixtures({ out = OUT, check = false } = {}) {
   const zfAddrs = zf.addresses;
   const st = stringsFixture();
   const b32 = bits32Fixture();
+  const meta = metaFixture();
+  const dmg = damagedFixture();
 
   const BUILT = {
     'universal.macho': universal(),
@@ -1444,6 +1893,12 @@ export async function buildFixtures({ out = OUT, check = false } = {}) {
     'zerofill.macho': zf.buf,
     'strings.macho': st.buf,
     'bits32.macho': b32.buf,
+    // Header-level metadata: flags, section type + attributes, and the three load
+    // commands that carry values rather than just declaring a dependency.
+    'meta.macho': meta.buf,
+    // A file whose header disagrees with its contents. Present so the abnormality
+    // checks run against something actually broken.
+    'damaged.macho': dmg.buf,
   };
 
 // Addresses are written alongside the binaries, because the suite's assertions
@@ -1463,7 +1918,31 @@ export async function buildFixtures({ out = OUT, check = false } = {}) {
     zerofill: BUILT['zerofill.macho'].length,
     strings: BUILT['strings.macho'].length,
     bits32: BUILT['bits32.macho'].length,
+    meta: BUILT['meta.macho'].length,
+    damaged: BUILT['damaged.macho'].length,
     fixtureUuid: FIXTURE_UUID,
+    // What the header-metadata fixture declares, so the assertions read the
+    // generator's intent rather than a copy of the reader's output.
+    metaExpected: {
+      flags: FIXTURE_MH_FLAGS,
+      flagNames: ['MH_NOUNDEFS', 'MH_DYLDLINK', 'MH_TWOLEVEL', 'MH_PIE'],
+      dataSectionType: 'S_CSTRING_LITERALS',
+      dataSectionAttributes: ['S_ATTR_DEBUG'],
+      rpath: meta.rpath,
+      entryoff: meta.entryoff,
+      entryoffHighGarbage: meta.entryoffHighGarbage,
+      sourceVersion: meta.sourceVersion.text,
+      loadCommands: ['LC_SEGMENT_64', 'LC_SYMTAB', 'LC_MAIN', 'LC_RPATH', 'LC_SOURCE_VERSION'],
+    },
+    // The three defects planted in the damaged fixture, as the kinds the reader
+    // must report. `loadCommands` stays at the real count — only the header's
+    // *claim* was inflated.
+    damagedExpected: {
+      realNcmds: dmg.realNcmds,
+      claimedNcmds: dmg.realNcmds + 97,
+      unnamedFlagBit: MH_UNNAMED_BIT,
+      kinds: ['unknown-header-flags', 'load-commands-truncated', 'strtab-past-slice-end'],
+    },
     x86_64: { ...Object.fromEntries(Object.entries(x86.addresses).map(([k, v]) => [k, `0x${v.toString(16)}`])) },
     arm64: { ...Object.fromEntries(Object.entries(arm.addresses).map(([k, v]) => [k, `0x${v.toString(16)}`])) },
     decoyAddrs: { ...Object.fromEntries(Object.entries(decoy.addresses).map(([k, v]) => [k, `0x${v.toString(16)}`])) },

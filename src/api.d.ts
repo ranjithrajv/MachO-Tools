@@ -138,8 +138,89 @@ export interface Section {
   addr: bigint;
   size: number;
   offset: number;
-  /** Section attributes, as of `section_64`. */
+  /**
+   * The raw `flags` word, as of `section_64`. Authoritative — the decoded fields
+   * below are derived from it and never replace it.
+   */
   flags: number;
+  /** The section type, from the low 8 bits. `S_UNKNOWN_0x…` if undefined. */
+  type: string;
+  /** The numeric type, before naming. */
+  typeRaw: number;
+  /** Section attributes, from the top 24 bits. See {@link Section.type}. */
+  attributes: string[];
+  /** Attribute bits with no name in `<mach-o/loader.h>`. Zero on a real binary. */
+  attributesUnknown: number;
+}
+
+/**
+ * A header `flags` word, decoded.
+ *
+ * `unknown` is kept apart from `names` on purpose: a bit that is set and unnamed
+ * is either a format newer than this reader or a corrupted header, and folding it
+ * in with the absent ones would make both look like an ordinary file.
+ */
+export interface HeaderFlags {
+  flags: number;
+  names: string[];
+  unknown: number;
+}
+
+/** A section `flags` word, decoded into its two disjoint halves. */
+export interface DecodedSectionFlags {
+  type: string;
+  typeRaw: number;
+  attributes: string[];
+  attributesUnknown: number;
+}
+
+/**
+ * An `LC_SOURCE_VERSION`, decoded from `a24.b10.c10.d10.e10`.
+ *
+ * The widths are unequal — `a` is 24 bits and the rest are 10 — so these are
+ * BigInts and `text` is the dotted form.
+ */
+export interface SourceVersion {
+  raw: bigint;
+  a: bigint;
+  b: bigint;
+  c: bigint;
+  d: bigint;
+  e: bigint;
+  text: string;
+}
+
+/**
+ * An `LC_MAIN` entry point, resolved only as far as the bytes support.
+ *
+ * `vaddr` is always `null`. The header calls `entryoff` a `__TEXT` offset, and
+ * measurement does not bear that out — on a fully-symbolled 113 MB binary it
+ * resolves into `__LINKEDIT` — so no address is derived rather than a plausible
+ * wrong one. See {@link resolveEntryPoint}.
+ */
+export interface EntryPoint {
+  /** The 32-bit value in the 16-byte form, the full uint64 in the 24-byte one. */
+  entryoff: bigint;
+  /** `null` in the 16-byte form, which declares no stack size. */
+  stacksize: bigint | null;
+  /** The command's declared size. 16 is what actually ships; 24 is documented. */
+  cmdsize: number;
+  /** Upper 32 bits as they sit in the file. Uninitialised in the 16-byte form. */
+  rawHigh32: number;
+  /** Which reading was used, and why. */
+  valueBasis: string;
+  /** Always `null` — see the note on this interface. */
+  vaddr: null;
+  /** Whether `entryoff` falls inside `__TEXT`. `null` when there is no `__TEXT`. */
+  entryoffLandsInText: boolean | null;
+  note: string;
+}
+
+/** One structural problem found in a slice. Reported alongside the parse. */
+export interface Abnormality {
+  /** A stable slug, e.g. `strtab-past-slice-end`. Safe to branch on. */
+  kind: string;
+  detail: string;
 }
 
 /** A parsed `LC_SYMTAB`. */
@@ -168,11 +249,24 @@ export interface Thin {
   filetype: number;
   ncmds: number;
   sizeofcmds: number;
+  /** The raw header `flags` word, byte 24. See {@link decodeHeaderFlags}. */
+  flags: number;
   segments: Segment[];
   sections: Section[];
   loadCommands: LoadCommand[];
   symtab: Symtab | null;
   uuid: string | null;
+  /** The raw `LC_MAIN` command, or null. See {@link resolveEntryPoint}. */
+  entryPoint: {
+    entryoff: bigint;
+    stacksize: bigint | null;
+    rawHigh32: number;
+    valueBasis: string;
+    cmdsize: number;
+  } | null;
+  sourceVersion: SourceVersion | null;
+  /** `LC_RPATH` paths, in the order the binary declares them. */
+  rpaths: string[];
 }
 
 /** One symbol-table entry. */
@@ -199,6 +293,63 @@ export declare function parseFat(f: Opener): FatSlice[] | null;
 
 /** Parse the load commands of the thin Mach-O at `base`. */
 export declare function parseThin(f: Opener, base?: number): Thin | null;
+
+/** Header `flags` bits, as `[bit, name]`, transcribed from `<mach-o/loader.h>`. */
+export declare const MH_FLAGS: Array<[number, string]>;
+
+/** Section types, keyed by the low 8 bits of a section's `flags`. */
+export declare const SECTION_TYPES: Record<number, string>;
+
+/** Section attribute bits, as `[bit, name]`. */
+export declare const SECTION_ATTRIBUTES: Array<[number, string]>;
+
+/** `SECTION_TYPE` — the low byte of a section's `flags`. */
+export declare const SECTION_TYPE_MASK: number;
+
+/** Decode a header `flags` word into names, plus any bits it cannot name. */
+export declare function decodeHeaderFlags(flags: number): HeaderFlags;
+
+/**
+ * Split a section's `flags` into its type and its attributes.
+ *
+ * The two are disjoint — type is the low 8 bits, attributes the top 24 — and
+ * answer different questions. `attributesUnknown` is bounded to the attribute
+ * region, so the type byte is never reported as an unknown attribute.
+ */
+export declare function decodeSectionFlags(flags: number): DecodedSectionFlags;
+
+/** Decode an `LC_SOURCE_VERSION` word, packed `a24.b10.c10.d10.e10`. */
+export declare function decodeSourceVersion(v: bigint): SourceVersion;
+
+/**
+ * An `LC_MAIN` entry point, with no address derived from it.
+ *
+ * `vaddr` is always `null`: the header's "`__TEXT` offset" description does not
+ * hold on real binaries, and a derived address would be plausible and wrong.
+ */
+export declare function resolveEntryPoint(thin: Thin): EntryPoint | null;
+
+/** Shannon entropy of a buffer, in bits per byte (0..8). */
+export declare function shannonEntropy(
+  f: Opener,
+  offset: number,
+  length: number,
+  maxBytes?: number,
+): number;
+
+/**
+ * Structural problems in one slice: unknown flag bits, a truncated load-command
+ * list, sections or tables reaching past the slice, overlapping symbol and string
+ * tables, an over-flat string table.
+ *
+ * Returns `[]` for a healthy binary. Parsing stays permissive: these are reported
+ * *alongside* a successful parse, never instead of one.
+ */
+export declare function detectAbnormalities(
+  f: Opener,
+  thin: Thin,
+  opts?: { sliceOffset?: number; sliceSize?: number | null },
+): Abnormality[];
 
 /** Every slice of a binary, fat or thin. */
 export declare function slicesOf(f: Opener): Slice[];
@@ -318,6 +469,18 @@ export declare function describe(path: string): {
     loadCommands: LoadCommand[];
     /** Lowercase RFC-4122, or null when the slice carries no `LC_UUID`. */
     uuid: string | null;
+    /** The raw header `flags` word. */
+    flags: number;
+    /** Its decoded names, e.g. `MH_PIE`. */
+    flagsNamed: string[];
+    /** Flag bits with no name in `<mach-o/loader.h>`. Zero on a known binary. */
+    flagsUnknown: number;
+    entryPoint: EntryPoint | null;
+    /** `LC_RPATH` paths, in declaration order. */
+    rpaths: string[];
+    sourceVersion: SourceVersion | null;
+    /** Structural problems. Empty on a healthy binary. */
+    abnormalities: Abnormality[];
   }>;
 };
 
