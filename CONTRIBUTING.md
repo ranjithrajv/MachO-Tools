@@ -79,14 +79,14 @@ until all three pass:
 
 ```sh
 node test/fixtures.mjs --check    #  ~0.1s   the corpus matches its generator
-node test/smoke.mjs               #  ~4s     202 passed, 1 skipped
+node test/smoke.mjs               #  ~4s     243 passed, 1 skipped
 node test/mutation-check.mjs      #  ~2m     7 mutations, 7 caught
 ```
 
 `npm run test:all` runs all three in order. There is no `npm install` step
 because there is nothing to install.
 
-**`fixtures --check`** re-derives all 39,568 bytes of the generated corpus and
+**`fixtures --check`** re-derives all 40,447 bytes of the generated corpus and
 compares them to what is on disk. Never hand-edit a file under
 `test/fixtures/`; run `node test/fixtures.mjs` to regenerate it. A hand-edited
 or stale fixture is a test that has stopped testing while still reporting
@@ -326,9 +326,9 @@ Two documents, two audiences, and the split is deliberate:
   material is something a *user* needs in order to use the tool; if not, it goes
   here.
 
-The README's numbers are claims, not decoration: `202 passed`, `7 mutations, 7
-caught`, `39,568 bytes`. If a change moves them, update them in the same commit
-— a README that says a suite passes 202 checks when it passes 204 is a
+The README's numbers are claims, not decoration: `243 passed`, `7 mutations, 7
+caught`, `40,447 bytes`. If a change moves them, update them in the same commit
+— a README that says a suite passes 242 checks when it passes 244 is a
 documentation bug, and this project has a documented allergy to confident
 wrong answers.
 

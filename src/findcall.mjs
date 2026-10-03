@@ -64,6 +64,29 @@ import { findCalls, listCallTargets } from './api.mjs';
 import { parseArgs, emitJSON, usage, EXIT } from './output.mjs';
 
 const { flags, opts, positional } = parseArgs(process.argv.slice(2));
+
+const HELP = [
+  'usage: node src/findcall.mjs <hex-vaddr> [binary|bundle] [--json] [--arch=<name>] [-b <binary>] [--include-data]',
+  '       node src/findcall.mjs --list [binary|bundle] [max] [--json] [--include-data]',
+  '',
+  '  direct call/jmp sites targeting an address, or with --list the distinct',
+  '  targets a binary calls, most-called first.',
+  '',
+  'options:',
+  '  --list             list distinct call targets instead of querying one',
+  '  --include-data     widen the scan from code sections to every section,',
+  '                     accepting false positives from data that decodes as a call',
+  '  --arch=<name>      read one architecture (x86_64, arm64)',
+  '  -b, --binary <p>   the binary to read',
+  '  --json             one JSON object on stdout; prose to stderr',
+  '  -h, --help         this message',
+];
+
+if (flags.has('help') || flags.has('h')) {
+  process.stdout.write(HELP.join('\n') + '\n');
+  process.exit(EXIT.ok);
+}
+
 const listMode = flags.has('list');
 const json = flags.has('json');
 const includeData = flags.has('include-data');
@@ -75,15 +98,10 @@ if (listMode) {
   // --list [binary] [max]
   maxList = Number(positional[1] || 40);
   if (!Number.isFinite(maxList) || maxList <= 0) {
-    usage(['--list takes a positive count as its second argument']);
+    usage(['--list takes a positive count as its second argument', ...HELP.slice(0, 2)]);
   }
 } else {
-  if (!positional[0] || !/^0x/i.test(positional[0])) {
-    usage([
-      'usage: node src/findcall.mjs <hex-vaddr> [binary|bundle] [--json] [--arch=<name>] [-b <binary>] [--include-data]',
-      '       node src/findcall.mjs --list [binary|bundle] [max] [--json] [--include-data]',
-    ]);
-  }
+  if (!positional[0] || !/^0x/i.test(positional[0])) usage(HELP.slice(0, 2));
   target = BigInt(positional[0]);
 }
 
@@ -200,7 +218,7 @@ try {
   for (const n of notes) console.log(`  note: ${n}`);
   process.exit(r.hits.length ? EXIT.ok : EXIT.empty);
 } catch (e) {
-  if (json) emitJSON({ tool: 'findcall', binary, ok: false, errors: ['io'], messages: [e.message] }, EXIT.fail);
+  if (json) emitJSON({ tool: 'findcall', binary, ok: false, errors: [e.code ?? 'io'], messages: [e.message] }, EXIT.fail);
   console.error(`${binary}: ${e.message}`);
   process.exit(EXIT.fail);
 }

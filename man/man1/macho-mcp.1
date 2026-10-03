@@ -1,0 +1,108 @@
+.TH MACHO\-MCP 1 "2026-10-03" "MachO-Tools 0.1.0" "User Commands"
+.SH NAME
+macho\-mcp \- serve MachO\-Tools over the Model Context Protocol
+.SH SYNOPSIS
+.B macho\-mcp
+.SH DESCRIPTION
+.B macho\-mcp
+serves this package's eight readers to a coding agent over the Model Context
+Protocol, on stdin and stdout. It is meant to be launched by an MCP client
+rather than run by hand: the process reads JSON\-RPC messages, one per line,
+and writes them back the same way.
+.PP
+The tools are
+.BR macho\-describe ,
+.BR macho\-sym ,
+.BR macho\-symlookup ,
+.BR macho\-findcall ,
+.BR macho\-findliteral ,
+.BR macho\-mapliteral ,
+.B macho\-a2o
+and
+.BR macho\-o2a .
+Each returns the same JSON envelope the command\-line tools emit under
+.BR \-\-json ,
+alongside a short text summary.
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Print usage on standard error and exit.
+.TP
+.BR \-v ", " \-\-version
+Print the version on standard error and exit.
+.PP
+Every other argument is a usage error. Standard output carries the protocol and
+nothing else; anything written there that is not a valid message is diverted to
+standard error and counted.
+.SH PROTOCOL VERSIONS
+Both protocol eras are served, because clients in the wild still use both. A
+request carrying
+.B _meta["io.modelcontextprotocol/protocolVersion"]
+is treated as the modern revision (2026\-07\-28, per\-request metadata, no
+handshake); an
+.B initialize
+request selects the legacy handshake, back to 2024\-11\-05.
+.B server/discover
+answers for either. An unsupported version is rejected with \-32022 and a list
+of the versions that are supported.
+.SH ENVIRONMENT
+.TP
+.B MACHO_BINARY
+Default binary, so a client need not repeat the path on every call.
+.TP
+.B MACHO_APP
+An application bundle, used when
+.B MACHO_BINARY
+is unset.
+.SH EXAMPLES
+Register with a client:
+.PP
+.nf
+.RS
+claude mcp add macho \-\- node /absolute/path/to/src/mcp.mjs
+.RE
+.fi
+.PP
+Or in a project's
+.BR .mcp.json :
+.PP
+.nf
+.RS
+{ "mcpServers": { "macho": {
+    "command": "node",
+    "args": ["/absolute/path/to/src/mcp.mjs"],
+    "env": { "MACHO_BINARY": "/path/to/a/binary" } } } }
+.RE
+.fi
+.SH EXIT STATUS
+.TP
+.B 0
+The client closed standard input.
+.TP
+.B 2
+Invoked with no client attached, or with
+.BR \-\-help / \-\-version .
+.SH NOTES
+A client that asks for a tool it does not recognise receives a protocol error
+naming the tools that exist. A call that finds nothing is
+.I not
+an error: it returns
+.B "ok: true"
+with an empty result, because a caller that cannot tell "found nothing" from
+"could not look" has no way to act on the difference. A genuine failure is
+reported with
+.B "ok: false"
+and a reason code \- for example
+.B io
+when the path cannot be read, or
+.B unknown\-encoding
+when it can be read and is not a Mach\-O.
+.SH SEE ALSO
+.BR macho\-describe (1),
+.BR macho\-sym (1),
+.BR macho\-symlookup (1),
+.BR macho\-findcall (1),
+.BR macho\-findliteral (1),
+.BR macho\-mapliteral (1),
+.BR macho\-a2o (1),
+.BR macho\-o2a (1)

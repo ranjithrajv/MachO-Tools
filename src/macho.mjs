@@ -440,13 +440,48 @@ export function preferredSlice(f, prefer) {
 }
 
 /**
+ * True when a section occupies bytes in the file, as opposed to being zero-fill.
+ *
+ * `__bss` and `__noptrbss` have a real `addr` and a real `size` but no bytes
+ * anywhere: the loader supplies zeros. The linker records their file `offset` as
+ * 0, and their address range usually extends past the end of the segment's
+ * `filesize`, so a `size > 0` test does not exclude them.
+ *
+ * This distinction decides whether an address can be read from the file at all,
+ * and getting it wrong is not a small error. In `go`, `__DATA,__bss` covers
+ * file offsets 0 through 180,760 — which are the Mach-O header and its load
+ * commands. A `o2a` that treated it as backed by the file reported file offset
+ * 0x1000 as being inside `__bss`, when it is the first byte of `__text`.
+ *
+ * The test is containment in the owning segment's file range rather than a
+ * comparison against the section's own `offset`, because `offset` is the field
+ * that is *not* meaningful for these sections.
+ */
+export function isBackedByFile(thin, sec) {
+  if (sec.size === 0) return false;
+  const seg = thin.segments.find((g) => g.segname === sec.segname);
+  if (!seg) return sec.offset !== 0;
+  // A section's file range is only real if it lies within the segment's.
+  return sec.offset >= Number(seg.fileoff)
+    && sec.offset + sec.size <= Number(seg.fileoff) + Number(seg.filesize);
+}
+
+/**
  * Map a file offset to a vaddr within a parsed slice, or null if unmapped.
  * Used to turn a literal's file offset into the address a tool must cite.
+ *
+ * Zero-fill sections are skipped. They are listed first-and-foremost as sections
+ * but have no bytes, so a file offset inside one belongs to whatever actually
+ * occupies that range — usually the header. See `isBackedByFile`.
  */
 export function toVaddr(thin, fileOff) {
   for (const s of thin.sections) {
+    if (!isBackedByFile(thin, s)) continue;
     if (fileOff >= s.offset && fileOff < s.offset + s.size) {
-      return { vaddr: s.addr + BigInt(fileOff - s.offset), section: `${s.segname},${s.sectname}` };
+      return {
+        vaddr: s.addr + BigInt(fileOff - s.offset),
+        section: `${s.segname},${s.sectname}`,
+      };
     }
   }
   for (const s of thin.segments) {
@@ -460,9 +495,65 @@ export function toVaddr(thin, fileOff) {
   return null;
 }
 
+/**
+ * Map a vaddr to a file offset within a parsed slice, or null.
+ *
+ * The inverse of `toVaddr`, and the half that needs the zero-fill check more
+ * urgently: `__bss` has an address and a size, so a vaddr inside it *looks*
+ * mappable, but no byte of it exists in the file. Returned as
+ * `{ zerofill: true }` rather than null, because "this address exists but is not
+ * in the file" and "this address is not in this binary" are different answers
+ * and a caller patching a file needs to tell them apart.
+ *
+ * Sections first, then segments, mirroring `toVaddr`: a section is the tighter
+ * answer, and the segment range is what covers the padding between them.
+ */
+export function toFileOffset(thin, vaddr) {
+  for (const s of thin.sections) {
+    if (vaddr < s.addr || vaddr >= s.addr + BigInt(s.size)) continue;
+    if (!isBackedByFile(thin, s)) {
+      return {
+        offset: null,
+        zerofill: true,
+        section: `${s.segname},${s.sectname}`,
+        segname: s.segname,
+      };
+    }
+    return {
+      offset: s.offset + Number(vaddr - s.addr),
+      zerofill: false,
+      section: `${s.segname},${s.sectname}`,
+      segname: s.segname,
+    };
+  }
+  for (const s of thin.segments) {
+    if (vaddr < s.vmaddr || vaddr >= s.vmaddr + s.vmsize) continue;
+    const delta = vaddr - s.vmaddr;
+    // Past `filesize` the segment is mapped but absent from the file: the tail of
+    // a `__DATA` that runs into `__bss`, or all of `__PAGEZERO`.
+    if (delta >= s.filesize) {
+      return {
+        offset: null,
+        zerofill: true,
+        section: `${s.segname} (segment)`,
+        segname: s.segname,
+      };
+    }
+    return {
+      offset: Number(s.fileoff) + Number(delta),
+      zerofill: false,
+      section: `${s.segname} (segment)`,
+      segname: s.segname,
+    };
+  }
+  return null;
+}
+
 /** The section containing a file offset, or null. */
 export function sectionOf(thin, fileOff) {
-  return thin.sections.find((s) => fileOff >= s.offset && fileOff < s.offset + s.size) || null;
+  return thin.sections.find(
+    (s) => isBackedByFile(thin, s) && fileOff >= s.offset && fileOff < s.offset + s.size,
+  ) || null;
 }
 
 /**

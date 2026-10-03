@@ -17,6 +17,8 @@ node src/sym.mjs 'runtime.main' /usr/local/go/bin/go
 node src/symlookup.mjs 0x100085c30 -b /usr/local/go/bin/go
 node src/findcall.mjs --list /usr/local/go/bin/go 20
 node src/findliteral.mjs LZ4 "/Applications/Some App.app"
+node src/a2o.mjs 0x100085c30 -b /usr/local/go/bin/go
+node src/o2a.mjs 0x85c30 -b /usr/local/go/bin/go
 node src/findcall.mjs --json 0x100085c30 /usr/local/go/bin/go | jq '.count'
 ```
 
@@ -32,8 +34,10 @@ No dependencies, no build step, no install, no network. Node ≥ 22.15.
 | `findcall.mjs` | Direct `call`/`jmp` xrefs to an address — or `--list` for the distinct targets a binary calls |
 | `findliteral.mjs` | Find a byte literal anywhere in a file, per slice, with context |
 | `mapliteral.mjs` | Map a literal to vaddrs, then find the pointers to them — which is how you find the code that handles a format |
+| `a2o.mjs` | Which byte of the file is this vaddr? Both the slice-relative and the absolute offset, and zero-fill as its own answer |
+| `o2a.mjs` | Which vaddr does this file offset have? Every slice's answer, since one offset means a different address in each |
 
-Six tools; there were seven until `symgrep.mjs` and `symfind.mjs` merged into
+Eight tools; there were seven until `symgrep.mjs` and `symfind.mjs` merged into
 `sym.mjs`, which now covers both conventions with `--regex` and `--all-imp`.
 
 ### Installing
@@ -73,6 +77,26 @@ address by *looking* like one turns a typo into a confident wrong answer.
 | `--include-data` | `findcall`: widen the scan from code sections to every section |
 | `-h`, `--help` | Print usage |
 
+`a2o` and `o2a` take only addresses or offsets as positionals, so their binary
+comes from `-b` like `symlookup`'s does.
+
+### Zero-fill is a third answer
+
+`a2o` distinguishes three outcomes, because they are three different facts and
+conflating any two of them puts a patch script in the wrong place:
+
+| | |
+|---|---|
+| `offset: 0x85c30` | mapped, and there is a byte at that position |
+| `zerofill: true` | mapped, and there is **no byte** — `__bss`, `__noptrbss`, `__PAGEZERO` |
+| `mapped: false` | not in this binary at all |
+
+`__bss` has an address and a size, and the linker records its file offset as `0`,
+so a reader that walks sections without asking whether they occupy bytes resolves
+the Mach-O header into `__bss` — in `go`, the first 180,760 bytes of the file. The
+`zerofill` fixture exists to keep that fixed, and reverting the fix fails five
+assertions against it.
+
 ## When to use this, and when not to
 
 Mach-O tooling splits cleanly into two kinds of thing, and this is only one of
@@ -95,6 +119,13 @@ Reach for **this** when:
 
 Reach for **something else** when:
 
+- you want **Mach-O and everything around it**. [`blacktop/ipsw`](https://github.com/blacktop/ipsw)
+  is the closest thing to a superset of this package: 17 `macho` commands and 34
+  `dyld` commands covering load commands, chained fixups, code signing,
+  entitlements, FairPlay decryption, Objective-C and Swift metadata, ARM64
+  disassembly, and firmware images and dyld shared caches this package never
+  looks at. It is MIT, installs from Homebrew, and is the better choice for
+  almost every question *except* the two in the table below;
 - you want a **complete, general Mach-O parser**.
   [`p-x9/MachOKit`](https://github.com/p-x9/MachOKit) (Swift, the most complete)
   or [`pstirparo/machofile`](https://github.com/pstirparo/machofile) (Python,
@@ -108,28 +139,73 @@ Reach for **something else** when:
 
 ### The comparison, concretely
 
-| | MachO-Tools | MachOKit / machofile | LIEF | `nm` / `otool` | Ghidra / IDA |
-|---|---|---|---|---|---|
-| Dependencies | none | none (Swift) / none (Python) | native library | none | large |
-| Build step | none | SwiftPM / none | yes | — | no |
-| Runs on Linux/Windows | yes | Swift: no / Python: yes | yes | no | yes |
-| Universal binaries | every slice | every slice | every slice | `lipo` first | per slice |
-| Regex over symbols | yes | no | no | partial | yes |
-| vaddr → function | yes | partial | no | no | yes |
-| Direct-call xrefs | yes | no | no | no | yes |
-| Indirect / PLT xrefs | **no** | no | no | no | yes |
-| Literal → vaddr → pointers | yes | no | no | no | by hand |
-| Scan restricted to code sections | yes | no | no | n/a | yes |
-| Objective-C / Swift metadata | **no** | yes | partial | no | yes |
-| Code signing / fixups | **no** | yes | yes | `codesign` | partial |
-| Disassembly | **no** | no | no | no | yes |
-| JSON output | yes | manual | yes | no | yes |
-| Importable as a library | yes | yes | yes | no | limited |
-| Reproducible offline test gate | **yes** | partial | n/a | n/a | partial |
+| | MachO-Tools | `ipsw` | MachOKit / machofile | LIEF | `nm` / `otool` | Ghidra / IDA |
+|---|---|---|---|---|---|---|
+| Dependencies | none | none (~40 MB binary) | none (Swift) / none (Python) | native library | none | large |
+| Build step | none | no (prebuilt) | SwiftPM / none | yes | — | no |
+| Runs on Linux/Windows | yes | yes (static binary) | Swift: no / Python: yes | yes | no | yes |
+| Universal binaries | every slice | every slice | every slice | every slice | `lipo` first | per slice |
+| Regex over symbols | yes | yes | no | no | partial | yes |
+| vaddr → function | yes | yes (`macho a2s`) | partial | no | no | yes |
+| vaddr → file offset | yes | yes (`macho a2o`) | no | no | no | by hand |
+| file offset → vaddr | yes | yes (`macho o2a`) | no | no | no | by hand |
+| Zero-fill reported as its own case | yes | no ‡ | no | no | no | no |
+| Direct-call xrefs | yes | **no** † | no | no | no | yes |
+| Indirect / PLT xrefs | **no** | no | no | no | no | yes |
+| Literal → vaddr → pointers | yes | **no** † | no | no | no | by hand |
+| Scan restricted to code sections | yes | **no** † | no | no | n/a | yes |
+| Objective-C / Swift metadata | **no** | yes | yes | partial | no | yes |
+| Code signing / fixups | **no** | yes | yes | yes | `codesign` | partial |
+| Disassembly | **no** | ARM64 only ‡ | no | no | no | yes |
+| JSON output | yes | partial § | manual | yes | no | yes |
+| Importable as a library | yes | yes (Go, `ipswd`) | yes | yes | no | limited |
+| Reproducible offline test gate | **yes** | no | partial | n/a | n/a | partial |
 
-The four bolded gaps are deliberate. They are the ones where a general parser or
-a disassembler is strictly better, and closing them here would mean becoming one
-of those projects instead of this one.
+The four bolded gaps in the MachO-Tools column are deliberate. They are the ones
+where a general parser or a disassembler is strictly better, and closing them
+here would mean becoming one of those projects instead of this one.
+
+`a2o` and `o2a` close a gap `ipsw` also has, and the reason it is worth saying
+is that the obvious implementation of both is wrong in the same direction. A
+section's file `offset` is relative to its slice, and `__bss` records an offset
+of 0 while having a non-zero size — so a reader that walks sections without
+asking whether they occupy bytes resolves the Mach-O header into `__bss`. In
+`go` that is the first 180,760 bytes of the file. `a2o` reports both the
+slice-relative and the absolute offset, and treats zero-fill as its own answer.
+
+`ipsw` wins almost every row above, and that is the honest shape of the
+landscape: it is the superset, this is the subset. The three rows marked † are
+the ones where it has no answer at all, and they are the reason this package
+still exists:
+
+- **`ipsw` has no cross-reference command for a standalone Mach-O.** Its only
+  one is `dyld xref <cache> <addr>`, scoped to a dyld shared cache rather than a
+  file, and marked `🚧 [WIP]` by its own author. `findcall` works on a single
+  binary, covers arm64 `BL` and x86_64 `rel32`, and can be restricted to code
+  sections so a data coincidence does not read as a call.
+- **Nothing in `ipsw` searches for an arbitrary byte literal and then follows
+  the pointers to it.** `macho info --strings` prints `__cstring`;
+  `findliteral` scans any byte sequence anywhere in the file, and `mapliteral`
+  turns each hit into a vaddr and finds what references it.
+
+‡ Its disassembler is ARM64-only and says so in the source — `macho_disass.go`
+returns `can only disassemble arm64 binaries` on any other CPU — so on x86_64,
+`findcall` covers ground `ipsw` does not reach at all.
+
+‡ `macho a2o` and `macho o2a` return an offset for any address, including one
+inside `__bss` — which has an address, a size, and no bytes in the file, because
+the loader supplies zeros. The offset it reports there is arithmetic that does not
+correspond to a readable byte. `a2o` reports that case as `zerofill: true` with
+no offset, because "mapped, and there is a byte" and "mapped, and there is none"
+are different facts and a patch script needs to tell them apart.
+
+§ `--json` is on `macho info` and `macho disass` but absent from `macho a2s`,
+`macho a2o`, `macho o2a` and `macho dump`, so a pipeline cannot rely on it
+uniformly. Every tool here has it, and the envelope shape is the same across all
+of them.
+
+The full row-by-row comparison, taken from `ipsw`'s source tree rather than its
+README, is in [`FEATURE-PARITY-IPSW.md`](FEATURE-PARITY-IPSW.md).
 
 ## What it will not do
 
@@ -197,7 +273,56 @@ indistinguishable from a correct answer.
 | 3 | Could not do the job — unreadable file, unparseable Mach-O |
 
 A caller that cannot tell "found nothing" from "could not look" has the problem
-this project keeps fixing, so it is encoded in the exit status.
+this project keeps fixing, so it is encoded in the exit status. The status is
+the same with and without `--json`: the flag changes the format of the answer,
+not the answer, and a tool whose text mode and JSON mode disagree about whether
+something was found is worse than one with no contract at all. The suite asserts
+that parity across tools rather than listing expected values per tool, so a tool
+added later fails the same check.
+
+### For coding agents
+
+Two doorways, and they are not redundant.
+
+**An MCP server**, so an agent that speaks the protocol finds these tools at
+all:
+
+```sh
+claude mcp add macho -- node /absolute/path/to/src/mcp.mjs
+```
+
+```json
+{ "mcpServers": { "macho": {
+    "command": "node",
+    "args": ["/absolute/path/to/src/mcp.mjs"],
+    "env": { "MACHO_BINARY": "/path/to/a/binary" } } } }
+```
+
+Eight tools — `macho-describe`, `macho-sym`, `macho-symlookup`,
+`macho-findcall`, `macho-findliteral`, `macho-mapliteral`, `macho-a2o`,
+`macho-o2a` — each returning the **same envelope** the CLIs emit under `--json`,
+plus a short text block. Nothing new to learn depending on how you arrived.
+
+It speaks both protocol eras, because clients in the wild still use both: the
+modern `2026-07-28` revision (per-request `_meta`, no handshake) and the legacy
+`initialize` handshake back to `2024-11-05`.
+
+**An [Agent Skill](skill/)**, for agents that drive the CLI or the library
+instead. It carries the three things that produce confidently wrong answers —
+addresses are hex *strings*, an empty result is not an error, `findcall` sees
+direct calls only — plus the workflow and the fallbacks. It is plain
+`SKILL.md` in an open format, so it works in Claude Code, Codex, Cursor, VS Code,
+Copilot and Gemini CLI by copying one directory.
+
+```sh
+mkdir -p .claude/skills && cp -r skill/macho-tools .claude/skills/
+```
+
+Be clear-eyed about what this is: Hopper, Binary Ninja and `ipsw` all ship an MCP
+server, so **this is distribution, not differentiation**. An MCP server is how an
+agent discovers a capability exists; without one this package is invisible to
+every agent-driven workflow while being well suited to it. See
+[`COMPETITIVE-LANDSCAPE.md`](COMPETITIVE-LANDSCAPE.md).
 
 ```js
 import { describe, findCalls, lookupAddress, mapLiteral } from 'MachO-Tools';
@@ -221,6 +346,8 @@ different, uninstalled package.
 | `listCallTargets(path, opts)` | The distinct addresses a binary calls |
 | `findLiteral(path, lit, opts)` | Byte-literal occurrences, per slice, with context |
 | `mapLiteral(path, lit, opts)` | Literal → vaddr → the pointers to it |
+| `addressToOffset(path, vaddr, opts)` | vaddr → file offset, both bases, or `zerofill` |
+| `offsetToAddress(path, offsets, opts)` | File offset → vaddr, one row per slice |
 | `withFile(path, fn)` | Open, hand to a callback, close |
 | `coversAddress(thin, vaddr)` | Is this address mapped by this slice? |
 
@@ -228,6 +355,28 @@ Two conventions worth knowing: **a negative answer is a value, not an
 exception** (`{ matches: [] }`, `{ function: null }` — genuine I/O failures still
 throw, so "no result" and "could not look" stay distinguishable), and
 **addresses are `bigint`** in, `"0x…"` out.
+
+`lookupAddress` returns `{ function: null }` for an address the slice does not
+map, rather than for the last symbol below it. A symbol table records where code
+*starts*, not where the slice *ends*, so without that check every address above
+the last symbol would resolve to that symbol with an offset of billions of bytes
+— a wrong answer shaped like a measurement. A symbol's own entry point still
+resolves even where it sits one past the last mapped byte, which is where a BSS
+symbol can land. `findCalls` and `mapLiteral` have always asked the same
+question, so the three agree about any address in any binary.
+
+`aliases` carries a second caveat: when several symbols start at the same
+address, the answer names the alternatives rather than implying it is the only
+one. This is ordinary, not exotic — Go's linker writes zero-size region markers
+beside real symbols, so in `go` both `_go:buildid` and `_runtime.text` sit at
+`0x100001000`. `nlist_64` has no size field, so nothing in the table separates a
+marker from a function, and a `size` derived from the next unrelated symbol is a
+bound rather than a measurement. `aliases: null` means the answer stands alone.
+
+`addressToOffset` and `offsetToAddress` report `query` and `vaddr` as `"0x…"`
+strings for the same reason every other address here is: a 64-bit position does not
+survive a JSON number. Offsets stay numeric — they are arithmetic, and a file
+position is far below 2^53 in practice.
 
 `src/macho.mjs` — the raw reader — is also importable and is where new format
 support lands first. It is stable within a major version but lower-level and more
@@ -256,19 +405,25 @@ network:
 git clone https://github.com/ranjithrajv/MachO-Tools && cd MachO-Tools
 
 node test/fixtures.mjs --check    #  ~0.1s   the corpus matches its generator
-node test/smoke.mjs               #  ~4s     202 passed, 1 skipped
+node test/smoke.mjs               #  ~4s     the tools, on binaries they were not written for
+node test/mcp.mjs                 #  ~15s    the protocol, driven over a real pipe
+node test/skill.mjs               #  ~3s     the agent instructions match the tools
 node test/mutation-check.mjs      #  ~2m     7 mutations, 7 caught
 ```
 
-The two fast numbers are wall-clock on an M-series laptop and are there to set
+The four fast numbers are wall-clock on an M-series laptop and are there to set
 expectations, not to be asserted. The counts and verdicts are the claim.
 
-Each is a different kind of evidence: `--check` re-derives all 39,568 bytes of
-the generated corpus, so a hand-edited or stale fixture cannot pass as a test;
+Each is a different kind of evidence: `--check` re-derives every byte of the
+generated corpus, so a hand-edited or stale fixture cannot pass as a test;
 `smoke.mjs` runs the tools against binaries they were not written for and
-asserts its own coverage; `mutation-check.mjs` reintroduces one real historical
-bug at a time and requires the suite to fail, with an inconclusive mutation
-failing the run rather than counting as caught.
+asserts its own coverage; `mcp.mjs` drives a real subprocess over a real pipe
+and parses **every** line of stdout, so a stray write on any code path turns a
+test red rather than a user's session green; `skill.mjs` holds the agent-facing
+prose to the tree, so an instruction cannot name a flag that does nothing or an
+exit code that means something else. `mutation-check.mjs` reintroduces one real
+historical bug at a time and requires the suite to fail, with an inconclusive
+mutation failing the run rather than counting as caught.
 
 **A green `npm run test:all` is also a complete rot check** — the fixtures pin
 exact addresses and counts, so a new toolchain release cannot silently change

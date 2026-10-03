@@ -38,16 +38,26 @@ import { mapLiteral } from './api.mjs';
 import { parseArgs, emitJSON, usage, EXIT } from './output.mjs';
 
 const { flags, opts, positional } = parseArgs(process.argv.slice(2));
-const literal = positional[0];
 
-if (!literal) {
-  usage([
-    'usage: node src/mapliteral.mjs <literal> [binary|bundle] [file-offset ...] [--json] [-b <binary>]',
-    '',
-    '  maps each occurrence of <literal> to a vaddr, then finds pointers to it.',
-    '  file offsets are absolute, as reported by findliteral.mjs.',
-  ]);
+const HELP = [
+  'usage: node src/mapliteral.mjs <literal> [binary|bundle] [file-offset ...] [--json] [-b <binary>]',
+  '',
+  '  maps each occurrence of <literal> to a vaddr, then finds pointers to it.',
+  '  file offsets are absolute, as reported by findliteral.mjs.',
+  '',
+  'options:',
+  '  -b, --binary <p>   the binary to read',
+  '  --json             one JSON object on stdout; prose to stderr',
+  '  -h, --help         this message',
+];
+
+if (flags.has('help') || flags.has('h')) {
+  process.stdout.write(HELP.join('\n') + '\n');
+  process.exit(EXIT.ok);
 }
+
+const literal = positional[0];
+if (!literal) usage(HELP);
 
 const binary = requireBinary({ argv: opts.b || opts.binary || positional[1] });
 // Positional offsets only when the binary came positionally too; with -b the
@@ -63,7 +73,7 @@ try {
   r = mapLiteral(binary, literal, { offsets: offsets.length ? offsets : null });
 } catch (e) {
   if (flags.has('json')) {
-    emitJSON({ tool: 'mapliteral', binary, ok: false, errors: ['io'], messages: [e.message] }, EXIT.fail);
+    emitJSON({ tool: 'mapliteral', binary, ok: false, errors: [e.code ?? 'io'], messages: [e.message] }, EXIT.fail);
   }
   console.error(`${binary}: ${e.message}`);
   process.exit(EXIT.fail);
@@ -106,3 +116,8 @@ for (const m of r.locations) {
 }
 for (const u of r.unmapped) console.log(`  file 0x${u.off.toString(16)} -> UNMAPPED`);
 for (const n of notes) console.log(`\n  note: ${n}`);
+
+// Same status as the `--json` branch above: a literal that matched nothing is a
+// negative result (1), not a success and not a failure. Without this the text
+// mode fell off the end and exited 0, so the two modes disagreed.
+process.exit(r.locations.length ? EXIT.ok : EXIT.empty);

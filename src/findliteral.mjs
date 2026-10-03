@@ -35,17 +35,28 @@ import { findLiteral } from './api.mjs';
 import { parseArgs, emitJSON, usage, EXIT } from './output.mjs';
 
 const { flags, opts, positional } = parseArgs(process.argv.slice(2));
-const literal = positional[0];
 
-if (!literal) {
-  usage([
-    'usage: node src/findliteral.mjs <literal> [binary|bundle] [--text] [--json] [-b <binary>]',
-    '',
-    '  <literal> is matched as raw latin1 bytes, so escapes work:',
-    '    node src/findliteral.mjs LZ4 /Applications/Some.app',
-    '    node src/findliteral.mjs \\x1f\\x8b --text',
-  ]);
+const HELP = [
+  'usage: node src/findliteral.mjs <literal> [binary|bundle] [--text] [--json] [-b <binary>]',
+  '',
+  '  <literal> is matched as raw latin1 bytes, so escapes work:',
+  '    node src/findliteral.mjs LZ4 /Applications/Some.app',
+  '    node src/findliteral.mjs \\x1f\\x8b --text',
+  '',
+  'options:',
+  '  --text             search __TEXT only, rather than the whole file',
+  '  -b, --binary <p>   the binary to read',
+  '  --json             one JSON object on stdout; prose to stderr',
+  '  -h, --help         this message',
+];
+
+if (flags.has('help') || flags.has('h')) {
+  process.stdout.write(HELP.join('\n') + '\n');
+  process.exit(EXIT.ok);
 }
+
+const literal = positional[0];
+if (!literal) usage(HELP);
 
 const binary = requireBinary({ argv: opts.b || opts.binary || positional[1] });
 const textOnly = flags.has('text');
@@ -56,7 +67,7 @@ try {
   r = findLiteral(binary, needle, { textOnly });
 } catch (e) {
   if (flags.has('json')) {
-    emitJSON({ tool: 'findliteral', binary, ok: false, errors: ['io'], messages: [e.message] }, EXIT.fail);
+    emitJSON({ tool: 'findliteral', binary, ok: false, errors: [e.code ?? 'io'], messages: [e.message] }, EXIT.fail);
   }
   console.error(`${binary}: ${e.message}`);
   process.exit(EXIT.fail);

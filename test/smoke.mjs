@@ -413,13 +413,23 @@ console.log('macho.mjs:');
   check(all.length > 0, 'slices are enumerated', all.join(', '));
   f.close();
 
+  // A negative result exits 1 in *both* modes. This assertion used to require
+  // `code === 0` here and pass, pinning the bug: the `--json` branch set
+  // EXIT.empty while the text branch fell off the end of the script and exited 0,
+  // so the same search answered differently depending on an output-format flag.
+  // Four tools had that shape.
   const bogus = run('sym.mjs', ['zzq-no-such-symbol-zzq', b.path]);
   check(
-    bogus.code === 0 && /0 match/.test(bogus.stdout),
-    'sym: an unmatched pattern exits 0 and reports zero',
-    (bogus.stdout.match(/0 match[^\n]*/) || [`exit ${bogus.code}`])[0],
+    bogus.code === 1 && /0 match/.test(bogus.stdout),
+    'sym: an unmatched pattern exits 1, in text mode as well as --json',
+    `exit ${bogus.code}, ${(bogus.stdout.match(/0 match[^\n]*/) || ['no count'])[0]}`,
   );
 }
+
+// The JSON-contract block and the exit-status-parity block below both need a
+  // binary with a `__text`, and the block-scoped copies they used to declare were
+  // not visible to the other. One definition, stated once.
+  const probe = binaries.find((b) => b.facts.textAddr !== null) || binaries[0];
 
 /* ---- the JSON contract ---------------------------------------------- */
 
@@ -428,7 +438,6 @@ console.log('\n--json:');
   // Every tool must honour the same two guarantees, or a consumer has to learn
   // six dialects instead of one. These are checked on the tools and shapes that
   // exist on *this* machine, so the suite is honest about what it covers.
-  const probe = binaries.find((b) => b.facts.textAddr !== null) || binaries[0];
   const addr = (probe.facts.textAddr ?? probe.facts.firstAddr ?? 0n).toString(16);
   const literal = 'FIXTURELITERAL';
 
@@ -494,6 +503,471 @@ console.log('\n--json:');
     run('findliteral.mjs', ['--json'], {}).code === 2,
     'a usage error still exits 2 under --json',
   );
+
+  // `data.ambiguous` has to be counted from the queries themselves rather than
+  // trusted, or a field that silently reported 0 would look like a corpus with
+  // no shared addresses.
+  const sr = run('symlookup.mjs', ['--json', '0x100001000', '0xdeadbeef00', '-b', probe.path]);
+  let sp = null;
+  try { sp = JSON.parse(sr.stdout); } catch { /* reported below */ }
+  check(
+    sp !== null
+      && typeof sp.data.ambiguous === 'number'
+      && sp.data.ambiguous === sp.data.queries.filter((q) => q.aliases !== null).length,
+    'symlookup: data.ambiguous counts the queries that share their address',
+    sp ? `ambiguous=${sp.data.ambiguous}, queries=${sp.data.queries.length}` : `exit ${sr.code}`,
+  );
+}
+
+/* ---- a2o and o2a: address <-> file offset ------------------------------ */
+
+console.log('\na2o / o2a: address and file offset');
+{
+  const { addressToOffset, offsetToAddress } = await import('../src/api.mjs');
+  const zf = binaries.find((b) => b.stem === 'zerofill');
+
+  if (!zf) {
+    skip('a2o / o2a zero-fill', 'the zerofill fixture is missing — run npm run test:fixtures');
+  } else {
+    const { toVaddr, parseThin, opener, isBackedByFile } = await import('../src/macho.mjs');
+    const f = opener(zf.path);
+    const thin = parseThin(f, 0);
+    const text = thin.sections.find((s) => s.sectname === '__text');
+    const bss = thin.sections.find((s) => s.sectname === '__bss');
+    const headerEnd = text.offset;
+    f.close();
+
+    // The defect this pair of tools exists alongside: `__bss` has an address and a
+    // size but no bytes, and the linker records its file offset as 0. A reader that
+    // tests sections before testing whether they occupy bytes resolves the header
+    // into `__bss` — in `go`, 180,760 bytes' worth.
+    check(
+      bss !== undefined && bss.offset === 0 && !isBackedByFile(thin, bss),
+      'fixture: __bss has no file offset and is not file-backed',
+      bss ? `offset=${bss.offset}, size=${bss.size}` : 'absent',
+    );
+
+    // Every offset the zero-fill section *claims* must resolve to what is really
+    // there. Stated over the claimed range rather than at one offset, because the
+    // failure mode is a whole range being wrong, not a single byte.
+    let wrong = null;
+    for (let off = 0; off < bss.size; off += 7) {
+      const m = toVaddr(thin, off);
+      const sec = m ? m.section : '';
+      if (/__bss/.test(sec)) { wrong = `0x${off.toString(16)} -> ${sec}`; break; }
+    }
+    check(
+      wrong === null,
+      'o2a: no file offset inside the zero-fill claimed range resolves to it',
+      wrong || `${bss.size} offset(s) checked across the claimed range`,
+    );
+
+    // The inverse: an address in `__bss` is mapped and has no byte. Conflating that
+    // with "not in this binary" is what sends a patch script to the wrong place.
+    const inBss = addressToOffset(zf.path, bss.addr + 0x10n);
+    check(
+      inBss.mapped && inBss.zerofill && inBss.offset === null && inBss.absoluteOffset === null,
+      'a2o: an address in __bss is mapped, zero-fill, and has no offset',
+      `mapped=${inBss.mapped} zerofill=${inBss.zerofill} offset=${inBss.offset}`,
+    );
+    check(
+      /zero-fill/.test(inBss.note || ''),
+      'a2o: the note explains why there is no offset',
+      inBss.note || 'no note',
+    );
+
+    // Three outcomes, three answers. Asserted separately because a tool that
+    // returned `null` for a zero-fill address would still "pass" the check above
+    // if that check did not also require `mapped`.
+    const past = addressToOffset(zf.path, 0x7fffffffffff0000n);
+    check(
+      !past.mapped && past.offset === null && !past.zerofill,
+      'a2o: an address past every segment is unmapped, not zero-fill',
+      `mapped=${past.mapped} zerofill=${past.zerofill} note=${past.note}`,
+    );
+
+    // Round trip on the same binary, because the two directions share the
+    // zero-fill decision and one can be right while the other is wrong.
+    const textAddr = text.addr + 0x40n;
+    const asOffset = addressToOffset(zf.path, textAddr);
+    check(
+      asOffset.offset === headerEnd + 0x40,
+      'a2o: a __text address maps to its own file offset',
+      `got ${asOffset.offset}, expected ${headerEnd + 0x40}`,
+    );
+    // Addresses come back as hex strings — the same rule every other tool follows, and
+    // the reason is that a 64-bit vaddr does not survive a JSON number. Compared
+    // as strings here for that reason, not as a convenience.
+    const wire = (v) => `0x${v.toString(16)}`;
+
+    const back = offsetToAddress(zf.path, asOffset.offset);
+    check(
+      back.queries[0].vaddr === wire(textAddr) && back.queries[0].slices[0].section === '__TEXT,__text',
+      'o2a: that offset maps back to the same address and section',
+      `${back.queries[0].vaddr} in ${back.queries[0].slices[0].section}`,
+    );
+
+    // The CLI, both directions, and the exit codes.
+    const at = run('a2o.mjs', ['--json', wire(textAddr), '-b', zf.path]);
+    const ot = run('o2a.mjs', ['--json', String(asOffset.offset), '-b', zf.path]);
+    let ap = null;
+    let op = null;
+    try { ap = JSON.parse(at.stdout); } catch { /* reported below */ }
+    try { op = JSON.parse(ot.stdout); } catch { /* reported below */ }
+    check(
+      ap !== null && ap.data.resolved === 1 && ap.data.asked === 1
+        && ap.data.queries[0].offset === asOffset.offset,
+      'a2o --json: reports the offset and counts it as resolved',
+      ap ? `resolved=${ap.data.resolved}, offset=${ap.data.queries[0].offset}` : `exit ${at.code}`,
+    );
+    check(
+      op !== null && op.data.resolved === 1 && op.data.queries[0].vaddr === wire(textAddr),
+      'o2a --json: reports the vaddr as a hex string',
+      op ? `resolved=${op.data.resolved}, vaddr=${op.data.queries[0].vaddr}` : `exit ${ot.code}`,
+    );
+
+    // A zero-fill address is a real answer, so it exits 0 — but it must not be
+    // counted as one that reached a byte, or the count means nothing.
+    const zb = run('a2o.mjs', ['--json', '0x' + bss.addr.toString(16), '-b', zf.path]);
+    let bp = null;
+    try { bp = JSON.parse(zb.stdout); } catch { /* reported below */ }
+    check(
+      bp !== null && bp.data.zerofill === 1 && bp.data.resolved === 0 && zb.code === 0,
+      'a2o --json: zero-fill is counted apart from resolved, and still exits 0',
+      bp ? `zerofill=${bp.data.zerofill}, resolved=${bp.data.resolved}, exit ${zb.code}` : `exit ${zb.code}`,
+    );
+
+    check(
+      run('a2o.mjs', ['--json', '0x7fffffffffff0000', '-b', zf.path]).code === 1
+        && run('o2a.mjs', ['--json', '999999999', '-b', zf.path]).code === 1,
+      'a2o / o2a: an unmapped query is a negative result, exit 1',
+    );
+    check(
+      run('a2o.mjs', ['-b', zf.path]).code === 2
+        && run('o2a.mjs', ['-b', zf.path]).code === 2
+        && run('a2o.mjs', [zf.path, '-b', zf.path]).code === 2
+        && run('o2a.mjs', ['notanoffset', '-b', zf.path]).code === 2,
+      'a2o / o2a: a missing or malformed query is a usage error, exit 2',
+    );
+  }
+
+  // `--help` and `-h` must exit 0 on every tool. Four of the six that predate
+  // `a2o`/`o2a` reported usage as an *error* instead, because their argument
+  // validation ran before the flag was looked at, so `--help` matched "no
+  // arguments given". A tool whose first command is `--help` — and for `describe`,
+  // whose entire job is being the first thing you run — answering with exit 2 is
+  // the wrong shape for the one flag every tool must accept.
+  {
+    const { TOOLS } = await import('../src/output.mjs');
+    const bad = [];
+    for (const t of TOOLS) {
+      for (const flag of ['--help', '-h']) {
+        const r = run(`${t}.mjs`, [flag]);
+        if (r.code !== 0 || !/usage/.test(r.stdout + r.stderr)) {
+          bad.push(`${t} ${flag}: exit ${r.code}`);
+        }
+      }
+    }
+    check(
+      bad.length === 0,
+      'every tool answers --help and -h with usage and exit 0',
+      bad.length ? bad.join('; ') : `${TOOLS.length} tools x 2 flags`,
+    );
+  }
+
+  // A universal binary maps 0x100000000 in *every* slice, so an unqualified query
+  // has no single answer. Reported, not guessed — this is the fat-binary case the
+  // project exists for and the one where a silent pick would be least detectable.
+  const universal = binaries.find((b) => b.stem === 'universal' && b.facts.textAddr !== null)
+    || binaries.find((b) => b.generated && b.stem === 'universal');
+  if (universal) {
+    const { addressToOffset } = await import('../src/api.mjs');
+    const base = 0x100000000n;
+    const both = addressToOffset(universal.path, base);
+    check(
+      both.ambiguous === true && Array.isArray(both.slices) && both.slices.length === 2,
+      'a2o: on a universal binary an address in two slices is reported, not guessed',
+      both.ambiguous ? `${both.slices.length} slices: ${both.slices.map((s) => `${s.arch}@0x${s.offset.toString(16)}`).join(', ')}` : `offset=${both.offset}`,
+    );
+    check(
+      both.offset === null && /--arch/.test(both.note || ''),
+      'a2o: the ambiguous row picks no offset and says how to disambiguate',
+      `offset=${both.offset}, note=${both.note}`,
+    );
+
+    const one = addressToOffset(universal.path, base, { arch: 'arm64' });
+    check(
+      one.ambiguous === undefined && one.arch === 'arm64' && one.offset !== null,
+      'a2o: --arch resolves the ambiguity to one slice',
+      `${one.arch}, relative ${one.offset}, absolute ${one.absoluteOffset}`,
+    );
+
+    // And the absolute offset is what a `dd` pipeline needs: it must round-trip.
+    const rt = offsetToAddress(universal.path, one.absoluteOffset, { arch: 'arm64' });
+    check(
+      rt.queries[0].vaddr === `0x${base.toString(16)}`,
+      'a2o / o2a: the absolute offset round-trips on a fat binary',
+      `0x${one.absoluteOffset.toString(16)} -> ${rt.queries[0].vaddr}`,
+    );
+  } else {
+    skip('a2o on a universal binary', 'no universal fixture with a known __text');
+  }
+}
+
+/* ---- one exit status per outcome, in every output mode ------------------ */
+
+console.log('\nexit status: the same answer with and without --json');
+{
+  // The contract is four states, and `--json` changes the *format* of the answer,
+  // not the answer. Four tools each implemented the JSON branch and forgot the
+  // text branch, which then fell off the end of the script and exited 0 — so a
+  // caller branching on the status got "found nothing" from one invocation and
+  // "found something" from the other, for the same search.
+  //
+  // Asserted as a parity property across tools rather than as four separate
+  // expected values: a parity check fails for *any* tool that drifts, including
+  // one added later, which a list of four literals would not.
+  const NEGATIVE = [
+    ['sym.mjs', ['zzq-no-such-symbol-zzq'], 'a pattern matching nothing'],
+    ['mapliteral.mjs', ['zzq-no-such-literal-zzq'], 'a literal that is absent'],
+    ['findliteral.mjs', ['zzq-no-such-literal-zzq'], 'an absent literal'],
+    ['findcall.mjs', ['0xdeadbeef00'], 'a target no slice maps'],
+    ['symlookup.mjs', ['0xdeadbeef00'], 'an address outside every slice'],
+  ];
+
+  for (const [tool, args, what] of NEGATIVE) {
+    const asText = run(tool, [...args, '-b', probe.path], { timeout: 180000 });
+    const asJson = run(tool, ['--json', ...args, '-b', probe.path], { timeout: 180000 });
+    check(
+      asText.code === 1 && asJson.code === 1,
+      `${tool}: ${what} exits 1 in both modes`,
+      `text ${asText.code}, json ${asJson.code}`,
+    );
+  }
+
+  // And the positive side, so the parity check above cannot be satisfied by a
+  // tool that simply always exits 1.
+  const hit = run('sym.mjs', ['-b', probe.path, '__mh_execute_header'], { timeout: 180000 });
+  const hitJson = run('sym.mjs', ['--json', '-b', probe.path, '__mh_execute_header'], { timeout: 180000 });
+  check(
+    hit.code === 0 && hitJson.code === 0 && /match/.test(hit.stdout),
+    'sym: a pattern that matches exits 0 in both modes',
+    `text ${hit.code}, json ${hitJson.code}`,
+  );
+}
+
+/* ---- an address nothing maps resolves to nothing ------------------------ */
+
+console.log('\nlookupAddress: an unmapped address is a negative answer');
+{
+  const { lookupAddress, coversAddress } = await import('../src/api.mjs');
+
+  // The symbol table records where code *starts*, not where the slice *ends*, so
+  // "the last symbol at or below the target" answers every address above the last
+  // symbol with that last symbol. `0xffffffffffffffff` came back as a real
+  // function name at an offset of ~1.8e19 bytes, which is the confident wrong
+  // answer this project exists to avoid — and worse than a missing one, because
+  // the offset looks like a measurement.
+  const absurd = lookupAddress(probe.path, 0xffffffffffffffffn);
+  check(
+    absurd.function === null && absurd.offset === null,
+    'lookupAddress: 0xffffffffffffffff resolves to nothing, not to the last symbol',
+    absurd.function ? `resolved to ${absurd.function} at +0x${absurd.offset.toString(16)}` : (absurd.note || 'null'),
+  );
+  check(
+    absurd.note !== null && /not mapped/.test(absurd.note),
+    'lookupAddress: an unmapped address says why it is a negative answer',
+    absurd.note || 'no note',
+  );
+
+  // `findCalls` and `mapLiteral` have asked this question all along. Three tools
+  // disagreeing about one address in one binary is the defect, so assert they
+  // agree now.
+  const { findCalls } = await import('../src/api.mjs');
+  const callers = findCalls(probe.path, 0xffffffffffffffffn);
+  check(
+    callers.hits.length === 0
+      && callers.slices.every((s) => s.skipped && /not mapped/.test(s.skipped)),
+    'lookupAddress and findCalls agree that an unmapped address is unreachable',
+    `${callers.hits.length} hit(s), skips: ${callers.slices.map((s) => s.skipped || 'none').join('; ') || 'none'}`,
+  );
+
+  // The guard must not swallow real answers. A BSS symbol can sit exactly at the
+  // end of its segment — in Go's `go`, `_runtime.enoptrbss` is precisely
+  // `__DATA.vmaddr + __DATA.vmsize`, one past the last mapped byte — and guarding
+  // before the search rejected that legitimate entry point. Every defined symbol
+  // must still resolve at its own address.
+  //
+  // Swept across every binary with symbols rather than one fixture: the
+  // generated fixtures have four symbols each and none of them sits on a
+  // boundary, so a single-binary check would have passed over the exact case this
+  // guard is at risk of breaking. The real binaries are where it shows up.
+  const { opener, parseThin, readSymbols, slicesOf, sliceName } = await import('../src/macho.mjs');
+
+  let checked = 0;
+  let guarded = 0;
+  let rejected = null;
+  let unresolved = 0;
+  let undisclosed = 0;
+  let aliasExample = null;
+  let boundary = null;
+
+  for (const b of binaries) {
+    let f;
+    try { f = opener(b.path); } catch { continue; }
+    let slices;
+    try { slices = slicesOf(f); } catch { f.close(); continue; }
+    for (const sl of slices) {
+      const thin = parseThin(f, sl.offset);
+      if (!thin) continue;
+      // Pin the slice. On a fat binary `lookupAddress` would otherwise choose the
+      // richest slice, and a symbol read out of one slice would be reported as
+      // "lost" when the answer came from another — a false failure that would
+      // push this check towards being deleted.
+      const arch = sl.cputype !== undefined ? sliceName(sl.cputype) : undefined;
+      const opts = arch ? { arch } : {};
+      const defs = readSymbols(f, sl.offset, thin).entries
+        .filter((e) => e.defined && e.addr !== 0n)
+        .sort((x, y) => (x.addr < y.addr ? -1 : 1));
+
+      // A symbol one past the last mapped byte is still a real entry point.
+      // `coversAddress` reads only the parsed header, so this scans every symbol
+      // in every binary — including `go`, at 19,526 of them — for free.
+      if (boundary === null) {
+        const cand = defs.find((s) => !coversAddress(thin, s.addr - 1n));
+        if (cand) boundary = { bin: b, sym: cand, opts };
+      }
+
+      // `lookupAddress` reopens and reparses the file on every call, so the sweep
+      // through it is sampled rather than exhaustive: 400 evenly spaced symbols
+      // per slice, plus both ends and the boundary symbol. Sampling is stated
+      // rather than left implicit, because a check that silently covers 2% of the
+      // input reads like one that covers all of it.
+      const step = Math.max(1, Math.floor(defs.length / 400));
+      const sample = [];
+      for (let i = 0; i < defs.length; i += step) sample.push(defs[i]);
+      if (defs.length) sample.push(defs[0], defs[defs.length - 1]);
+      if (boundary && boundary.bin === b) sample.push(boundary.sym);
+
+      for (const s of sample) {
+        const r = lookupAddress(b.path, s.addr, opts);
+        checked++;
+        // The regression this guard could cause: rejecting an address that a real
+        // symbol starts at. Distinguished from the alias case below by the note —
+        // only the guard sets it.
+        if (r.function === null && r.note && /not mapped/.test(r.note)) {
+          guarded++;
+          if (rejected === null) {
+            rejected = `${b.stem}: ${s.name} at 0x${s.addr.toString(16)} — ${r.note}`;
+          }
+        } else if (r.function !== s.name) {
+          unresolved++;
+          const bname = b.generated ? b.stem : b.path.split('/').pop();
+          // A disclosed alternative must actually be a name at this address —
+          // otherwise the field is decoration.
+          const names = [r.function, ...(r.aliases || [])];
+          const genuine = names.includes(s.name);
+          if (!genuine || r.aliases === null) {
+            undisclosed++;
+            if (aliasExample === null) {
+              aliasExample = `${s.name} at 0x${s.addr.toString(16)} in ${bname} -> ${r.function}, aliases ${JSON.stringify(r.aliases)}`;
+            }
+          }
+        }
+      }
+    }
+    f.close();
+  }
+
+  check(
+    checked > 0 && guarded === 0,
+    'lookupAddress: the coverage guard never rejects an address a symbol starts at',
+    rejected || `${checked} symbol start(s) sampled across ${binaries.length} binaries`,
+  );
+
+  // Every symbol that does not come back as itself must come back with the
+  // alternatives named, and the chosen name must be one that genuinely starts
+  // there.
+  //
+  // Asserting that all 21,022 symbol starts resolve to themselves would be
+  // asserting something untrue: in `go`, 13 do not, because Go's linker writes
+  // zero-size region markers beside real symbols — `_go:buildid` and
+  // `_runtime.text` both sit at `0x100001000`, and four names share
+  // `0x100c91ac0`. `nlist_64` has no size field, so nothing in the symbol table
+  // distinguishes a marker from a function. The answer is therefore whichever
+  // name the table puts last at that address, and the defect was that it was
+  // reported as though it were the only one — with a `size` derived from the
+  // next unrelated symbol, which is a number shaped like a measurement and is
+  // not one. So the invariant is "either it is the answer, or the other names
+  // are disclosed", which is checkable and true.
+  // Skipped rather than passed when the corpus has no shared addresses. A check
+  // that requires its own input to be interesting is asserting something about
+  // the corpus rather than about the tool, and turning an absent input into a
+  // failure is the mirror image of the failure this suite exists to catch.
+  if (unresolved === 0) {
+    skip('shared-address alias disclosure', 'no sampled symbol start is shared with another name');
+  } else {
+    check(
+      undisclosed === 0,
+      'lookupAddress: a symbol start either resolves to itself or names its alternatives',
+      undisclosed
+        ? `${undisclosed} of ${unresolved} shared-address start(s) misreported, e.g. ${aliasExample}`
+        : `${unresolved} shared-address start(s), all naming their alternatives`,
+    );
+  }
+
+  // Positive control for the alias disclosure: an address with one symbol at it
+  // must report none, or the field would pass by always being populated.
+  let singleChecked = 0;
+  let singleBad = null;
+  for (const b of binaries) {
+    let f;
+    try { f = opener(b.path); } catch { continue; }
+    let slices;
+    try { slices = slicesOf(f); } catch { f.close(); continue; }
+    for (const sl of slices) {
+      const thin = parseThin(f, sl.offset);
+      if (!thin) continue;
+      const arch = sl.cputype !== undefined ? sliceName(sl.cputype) : undefined;
+      const defs = readSymbols(f, sl.offset, thin).entries
+        .filter((e) => e.defined && e.addr !== 0n)
+        .sort((x, y) => (x.addr < y.addr ? -1 : 1));
+      const step = Math.max(1, Math.floor(defs.length / 200));
+      for (let i = 0; i < defs.length; i += step) {
+        const s = defs[i];
+        const shared = defs.some((d) => d.addr === s.addr && d.name !== s.name);
+        if (shared) continue;
+        const r = lookupAddress(b.path, s.addr, arch ? { arch } : {});
+        singleChecked++;
+        if (r.aliases !== null) {
+          if (singleBad === null) singleBad = `${s.name} claimed aliases ${JSON.stringify(r.aliases)}`;
+          break;
+        }
+      }
+    }
+    f.close();
+  }
+  check(
+    singleChecked > 0 && singleBad === null,
+    'lookupAddress: an address with one symbol at it reports no aliases',
+    singleBad || `${singleChecked} unambiguous symbol start(s) checked`,
+  );
+
+  if (boundary) {
+    const r = lookupAddress(boundary.bin.path, boundary.sym.addr, boundary.opts);
+    // Same label the per-binary sections use: generated fixtures carry a `stem`,
+    // discovered system binaries do not and are named by basename.
+    const bname = boundary.bin.generated
+      ? boundary.bin.stem
+      : boundary.bin.path.split('/').pop();
+    check(
+      r.function === boundary.sym.name,
+      `lookupAddress: a symbol one past the last mapped byte still resolves (${boundary.sym.name} in ${bname})`,
+      r.function ? `resolved to ${r.function}` : (r.note || 'null'),
+    );
+  } else {
+    skip('boundary symbol', 'no binary here has a symbol one past the last mapped byte');
+  }
 }
 
 /* ---- the typed call scan -------------------------------------------- */

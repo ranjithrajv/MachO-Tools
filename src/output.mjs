@@ -39,11 +39,13 @@
 /**
  * Envelope keys every tool emits, so consumers can rely on the shape.
  *
- * Six tools, and `sym` is one of them rather than the two it replaced: the
+ * Eight tools, and `sym` is one of them rather than the two it replaced: the
  * `symgrep`/`symfind` pair went away with the merge rather than being kept as
  * aliases, so neither name can appear here any more.
  */
-export const TOOLS = ['describe', 'sym', 'symlookup', 'findcall', 'findliteral', 'mapliteral'];
+export const TOOLS = [
+  'describe', 'sym', 'symlookup', 'findcall', 'findliteral', 'mapliteral', 'a2o', 'o2a',
+];
 
 /**
  * Split argv into flags and positionals.

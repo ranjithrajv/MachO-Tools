@@ -99,6 +99,18 @@ const VMADDR_BASE = 0x100000000n;
  */
 const HEADER_PLUS_LOADCMDS = 32 + (72 + 80 * 2) + 24;
 
+/**
+ * The same figure for a fixture with a different section count.
+ *
+ * Every extra `section_64` is 80 bytes of load command, which pushes all the
+ * section *data* later. The constant above is only right for two sections, and
+ * using it for a three-section fixture silently misplaces `__text` by 80 bytes —
+ * which then makes every address assertion fail for a reason that has nothing to
+ * do with the tools. Derived rather than restated, for the same reason the
+ * builder derives `nsects`.
+ */
+const headerPlusLoadcmds = (nsects = 2) => 32 + (72 + 80 * nsects) + 24;
+
 /** The vaddr of the `__text` section, given its file offset. */
 const textVaddr = (textOffset) => VMADDR_BASE + BigInt(textOffset);
 
@@ -113,12 +125,21 @@ const textVaddr = (textOffset) => VMADDR_BASE + BigInt(textOffset);
  * segment holding a code section and a data section, plus an `LC_SYMTAB`.
  * Real linkers emit more load commands; nothing in this reader needs them, and
  * every one omitted is a thing a fixture cannot get wrong.
+ *
+ * `zerofill` adds a third section that occupies address space and no bytes. It
+ * exists because a `__bss`-shaped section is the one input that makes an
+ * offset-to-address mapping quietly wrong: its recorded file `offset` is 0, so a
+ * reader that tests sections before testing whether they occupy bytes will
+ * resolve the header and the load commands into `__bss`. In `go` that is
+ * 180,760 bytes of a real binary, and offset 0x1000 — the first byte of `__text`
+ * — comes back as being inside `__bss`.
  */
-function thinMachO({ cputype, text, data, dataFlags = S_REGULAR, symbols, textFlags = S_ATTR_PURE_INSTRUCTIONS | 0x4 }) {
+function thinMachO({ cputype, text, data, dataFlags = S_REGULAR, symbols, textFlags = S_ATTR_PURE_INSTRUCTIONS | 0x4, zerofill = null }) {
   const segname = '__TEXT';
+  const nsects = zerofill ? 3 : 2;
   const ncmds = 2;
   const headerSize = 32;
-  const segCmdSize = 72 + 80 * 2;              // LC_SEGMENT_64 + two section_64
+  const segCmdSize = 72 + 80 * nsects;        // LC_SEGMENT_64 + one section_64 each
   const symtabCmdSize = 24;
   const loadCommandsSize = segCmdSize + symtabCmdSize;
 
@@ -171,12 +192,21 @@ function thinMachO({ cputype, text, data, dataFlags = S_REGULAR, symbols, textFl
   buf.writeUInt32LE(segCmdSize, o + 4);
   buf.write(segname, o + 8, 'latin1');
   buf.writeBigUInt64LE(VMADDR_BASE, o + 24);      // vmaddr
-  buf.writeBigUInt64LE(BigInt(totalSize), o + 32);// vmsize
+  // `vmsize` covers the zero-fill range as well as the file, which is what makes
+  // an address inside `__bss` genuinely *mapped* — so a reader has to distinguish
+  // "mapped with no byte behind it" from "not in this binary", and the segment is
+  // where that distinction comes from.
+  buf.writeBigUInt64LE(
+    zerofill
+      ? zerofill.addr + BigInt(zerofill.size) - VMADDR_BASE
+      : BigInt(totalSize),
+    o + 32,
+  );                                             // vmsize
   buf.writeBigUInt64LE(BigInt(0), o + 40);        // fileoff
   buf.writeBigUInt64LE(BigInt(totalSize), o + 48);// filesize
   buf.writeUInt32LE(5, o + 56);                   // maxprot
   buf.writeUInt32LE(5, o + 60);                   // initprot
-  buf.writeUInt32LE(2, o + 64);                   // nsects
+  buf.writeUInt32LE(nsects, o + 64);             // nsects
   buf.writeUInt32LE(0, o + 68);                   // flags
 
   // ---- section_64: __text (instructions)
@@ -203,6 +233,25 @@ function thinMachO({ cputype, text, data, dataFlags = S_REGULAR, symbols, textFl
   buf.writeUInt32LE(dataOffset, s + 48);
   buf.writeUInt32LE(2, s + 52);
   buf.writeUInt32LE(dataFlags, s + 64);
+
+  // ---- section_64: __bss (zero-fill — address range, no bytes)
+  //
+  // `offset` is 0 and `size` is non-zero, which is exactly what a linker records
+  // for a section the loader fills with zeros. `addr` continues past the end of
+  // the segment's `filesize`, since that is where uninitialised data lives.
+  // Anything that maps a vaddr without asking whether the section has bytes will
+  // claim the header belongs here.
+  if (zerofill) {
+    s = seg + 72 + 80 * 2;
+    buf.write(zerofill.sectname, s, 'latin1');
+    buf.write(zerofill.segname ?? segname, s + 16, 'latin1');
+    buf.writeBigUInt64LE(zerofill.addr, s + 32);
+    buf.writeBigUInt64LE(BigInt(zerofill.size), s + 40);
+    buf.writeUInt32LE(0, s + 48);                       // offset: no bytes
+    buf.writeUInt32LE(8, s + 52);                       // align
+    // S_ZEROFILL (0x1) with no S_ATTR_*_INSTRUCTIONS, so a typed scan skips it.
+    buf.writeUInt32LE(0x1, s + 64);
+  }
 
   // ---- LC_SYMTAB
   o = headerSize + segCmdSize;
@@ -400,6 +449,54 @@ function decoyFixture() {
 function arm64Only() {
   const c = codeFixture(CPU_ARM64);
   return thinMachO({ cputype: CPU_ARM64, ...c });
+}
+
+/**
+ * A binary with a zero-fill section: address range, no bytes.
+ *
+ * The shape that makes offset-to-address mapping quietly wrong. `__bss` has a
+ * real `addr` and a real `size`, and the linker records its file `offset` as 0 —
+ * so a reader that walks sections without asking whether they occupy bytes
+ * resolves every file offset from 0 up to the section's size into `__bss`. In a
+ * real binary that range is the Mach-O header and its load commands.
+ *
+ * Here it is deliberately larger than the header, which is what makes the defect
+ * reachable: `HEADER_PLUS_LOADCMDS` is 328 bytes, so a 4 KiB zero-fill section
+ * covers the header *and* the whole of `__text`'s first 3,768 bytes. Without
+ * this fixture, `o2a` on any offset below 0x1000 would return `__bss` and the
+ * suite would pass.
+ *
+ * The address range starts past the end of the file, where a real `__bss` sits,
+ * and `vmsize` is extended to cover it — so these addresses are genuinely mapped,
+ * which is the distinction being tested. `a2o` must say "mapped, no byte" rather
+ * than "not in this binary", and `o2a` must not be drawn into the section.
+ */
+function zerofillFixture() {
+  const c = codeFixture(CPU_X86_64);
+  const BSS_SIZE = 0x1000;
+  const headerEnd = headerPlusLoadcmds(3); // three sections, not two
+  // Past the end of the section data, as `__bss` always is. The symbol table and
+  // string table follow it, so this is not the end of the file — `verify()`
+  // asserts the section really is beyond the last byte rather than assuming it.
+  const bssAddr = VMADDR_BASE + BigInt(headerEnd + c.text.length + c.data.length);
+  const buf = thinMachO({
+    cputype: CPU_X86_64,
+    ...c,
+    zerofill: { sectname: '__bss', segname: '__TEXT', addr: bssAddr, size: BSS_SIZE },
+  });
+  return {
+    buf,
+    // Returned separately from the buffer: `thinMachO` returns bytes, and the
+    // addresses are what the assertions need. `text` is restated here against this
+    // fixture's own layout, since `codeFixture`'s was computed for two sections.
+    addresses: {
+      ...c.addresses,
+      text: VMADDR_BASE + BigInt(headerEnd),
+      bss: bssAddr,
+      bssSize: BSS_SIZE,
+      headerEnd,
+    },
+  };
 }
 
 /** A fat binary whose slices sit at deliberately awkward offsets. */
@@ -600,6 +697,98 @@ async function verify(files) {
     'decoy: the extra hit is attributed to __data',
   );
 
+  // The zero-fill fixture. Asserted here as well as in the suite, because a
+  // fixture that does not hold up is a broken instrument — it would make the
+  // suite pass for the wrong reason, which is the whole reason `verify()` exists.
+  //
+  // Every assertion below is one that fails against the reader as it was before
+  // `isBackedByFile` existed, which is the point: the defect was reachable from
+  // any binary with a `__bss`, and no fixture in the corpus had one.
+  {
+    const { addressToOffset, offsetToAddress } = await import('../src/api.mjs');
+    const z = zerofillFixture().addresses;
+
+    // The section really does start past every file-backed section, or the "mapped
+    // but no byte" assertions below would pass for the wrong reason.
+    //
+    // Compared against the last section's end rather than the file's size: the
+    // symbol table and string table follow the section data, so a `__bss` address
+    // can sit at a low file offset while still being outside every section. What
+    // makes it zero-fill is that no section covers it, not where the file ends.
+    {
+      const { opener, parseThin } = await import('../src/macho.mjs');
+      const f = opener(files.zerofill);
+      const thin = parseThin(f, 0);
+      const backed = thin.sections.filter((s) => s.offset !== 0);
+      const lastEnd = backed.reduce((m, s) => (s.addr + BigInt(s.size) > m ? s.addr + BigInt(s.size) : m), 0n);
+      expect(
+        z.bss >= lastEnd,
+        `zerofill: __bss starts past every file-backed section (0x${z.bss.toString(16)} vs last end 0x${lastEnd.toString(16)})`,
+      );
+      expect(
+        thin.segments[0].vmsize > thin.segments[0].filesize,
+        'zerofill: the segment is mapped past the end of its file range',
+      );
+      f.close();
+    }
+
+    // The load commands are inside `__bss`'s *claimed* file range and must not
+    // resolve to it. This is the defect, stated as an assertion.
+    const hdr = offsetToAddress(files.zerofill, [0, 0x10, z.headerEnd - 1]);
+    for (const q of hdr.queries) {
+      const sec = q.slices[0]?.section || '';
+      expect(
+        !/__bss/.test(sec),
+        `zerofill: file offset 0x${q.query.toString(16)} does not resolve into __bss (got ${sec})`,
+      );
+    }
+    // And it must resolve to the real thing: the header sits in __TEXT's segment
+    // range, in no section.
+    // Compared as the hex string the API reports, since a 64-bit vaddr is a string on
+    // the wire and `===` against a BigInt would be false for the right answer.
+    expect(
+      hdr.queries[0].vaddr === `0x${VMADDR_BASE.toString(16)}`,
+      `zerofill: file offset 0 is the start of __TEXT (got ${hdr.queries[0].vaddr})`,
+    );
+
+    // __text still resolves, by name and by address.
+    const atText = offsetToAddress(files.zerofill, [z.headerEnd]);
+    expect(
+      atText.queries[0].vaddr === `0x${z.text.toString(16)}` && atText.queries[0].slices[0].section === '__TEXT,__text',
+      `zerofill: the first __text byte resolves to __TEXT,__text (got ${atText.queries[0].slices[0].section})`,
+    );
+
+    // An address inside __bss is *mapped* and has no byte. Three distinct answers
+    // — byte / zero-fill / unmapped — and conflating the last two is what makes a
+    // patch script write to the wrong place.
+    const bss = addressToOffset(files.zerofill, z.bss + 0x10n);
+    expect(bss.mapped, 'zerofill: an address in __bss is mapped');
+    expect(bss.zerofill, 'zerofill: an address in __bss is reported as zero-fill');
+    expect(bss.offset === null, 'zerofill: an address in __bss has no file offset');
+    expect(
+      /zero-fill/.test(bss.note || ''),
+      `zerofill: the note says why there is no offset (got ${JSON.stringify(bss.note)})`,
+    );
+
+    // Just before __bss is a real byte; just after the file's end is unmapped.
+    expect(
+      addressToOffset(files.zerofill, z.bss - 1n).offset !== null,
+      'zerofill: the address before __bss is a real byte',
+    );
+    expect(
+      !addressToOffset(files.zerofill, 0x7fffffffffff0000n).mapped,
+      'zerofill: an address past every segment is not mapped',
+    );
+
+    // Round trip both ways, on the same binary, since the two directions share the
+    // zero-fill decision and one of them can be right while the other is wrong.
+    for (const v of [z.text, z.callerA, z.target]) {
+      const o = addressToOffset(files.zerofill, v);
+      expect(o.offset === z.headerEnd + Number(v - z.text), `zerofill: 0x${v.toString(16)} maps to its own offset`);
+      expect(offsetToAddress(files.zerofill, o.offset).queries[0].vaddr === `0x${v.toString(16)}`, `zerofill: 0x${v.toString(16)} round-trips`);
+    }
+  }
+
   // listCallTargets must be non-empty on the populated fixtures: a scanner that
   // finds nothing and a scanner that is broken look identical from outside.
   expect(
@@ -757,6 +946,8 @@ export async function buildFixtures({ out = OUT, check = false } = {}) {
   const arm = codeFixture(CPU_ARM64);
   const decoy = decoyFixture();
   const populated = populatedFixture();
+  const zf = zerofillFixture();
+  const zfAddrs = zf.addresses;
 
   const BUILT = {
     'universal.macho': universal(),
@@ -766,6 +957,7 @@ export async function buildFixtures({ out = OUT, check = false } = {}) {
     'decoy.macho': thinMachO({ cputype: CPU_X86_64, text: decoy.text, data: decoy.data, symbols: decoy.symbols, textFlags: decoy.textFlags }),
     'stripped.macho': thinMachO({ cputype: CPU_X86_64, text: x86.text, data: x86.data, symbols: [] }),
     'populated.macho': thinMachO({ cputype: CPU_X86_64, text: populated.text, data: populated.data, symbols: populated.symbols }),
+    'zerofill.macho': zf.buf,
   };
 
 // Addresses are written alongside the binaries, because the suite's assertions
@@ -780,9 +972,18 @@ export async function buildFixtures({ out = OUT, check = false } = {}) {
     decoy: BUILT['decoy.macho'].length,
     stripped: BUILT['stripped.macho'].length,
     populated: BUILT['populated.macho'].length,
+    zerofill: BUILT['zerofill.macho'].length,
     x86_64: { ...Object.fromEntries(Object.entries(x86.addresses).map(([k, v]) => [k, `0x${v.toString(16)}`])) },
     arm64: { ...Object.fromEntries(Object.entries(arm.addresses).map(([k, v]) => [k, `0x${v.toString(16)}`])) },
     decoyAddrs: { ...Object.fromEntries(Object.entries(decoy.addresses).map(([k, v]) => [k, `0x${v.toString(16)}`])) },
+    // The zero-fill section starts past the end of the file, and its size is
+    // larger than the header, so `bss` past `headerEnd` is inside `__bss` and
+    // `headerEnd` is not.
+    zerofillAddrs: {
+      bss: `0x${zfAddrs.bss.toString(16)}`,
+      bssSize: zfAddrs.bssSize,
+      headerEnd: zfAddrs.headerEnd,
+    },
     populatedAddrs: {
       bulk: POPULATED_FILLERS,
       defined: POPULATED_FILLERS + 4,

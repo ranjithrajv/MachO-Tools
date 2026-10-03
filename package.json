@@ -38,6 +38,7 @@
     "test/fixtures",
     "man",
     "completions",
+    "skill",
     "config.json",
     "COPYING",
     "LICENSE",
@@ -50,7 +51,10 @@
     "man/man1/macho-symlookup.1",
     "man/man1/macho-findcall.1",
     "man/man1/macho-findliteral.1",
-    "man/man1/macho-mapliteral.1"
+    "man/man1/macho-mapliteral.1",
+    "man/man1/macho-a2o.1",
+    "man/man1/macho-o2a.1",
+    "man/man1/macho-mcp.1"
   ],
   "bin": {
     "macho-describe": "src/describe.mjs",
@@ -58,13 +62,18 @@
     "macho-symlookup": "src/symlookup.mjs",
     "macho-findcall": "src/findcall.mjs",
     "macho-findliteral": "src/findliteral.mjs",
-    "macho-mapliteral": "src/mapliteral.mjs"
+    "macho-mapliteral": "src/mapliteral.mjs",
+    "macho-a2o": "src/a2o.mjs",
+    "macho-o2a": "src/o2a.mjs",
+    "macho-mcp": "src/mcp.mjs"
   },
   "scripts": {
     "test": "node test/smoke.mjs",
     "test:fixtures": "node test/fixtures.mjs",
     "test:mutation": "node test/mutation-check.mjs",
-    "test:all": "npm run test:fixtures && npm test && npm run test:mutation"
+    "test:mcp": "node test/mcp.mjs",
+    "test:skill": "node test/skill.mjs",
+    "test:all": "npm run test:fixtures && npm test && npm run test:mcp && npm run test:skill && npm run test:mutation"
   },
   "engines": {
     "node": ">=22.15"

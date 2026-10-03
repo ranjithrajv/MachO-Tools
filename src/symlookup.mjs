@@ -38,14 +38,25 @@ import { parseArgs, emitJSON, usage, EXIT } from './output.mjs';
 
 const { flags, positional, opts } = parseArgs(process.argv.slice(2));
 
-if (positional.length === 0) {
-  usage([
-    'usage: node src/symlookup.mjs <hex-vaddr> [<hex-vaddr> ...] [--json] [--arch=<name>] [-b <binary>]',
-    '',
-    '  every positional argument is an address, so the binary comes from',
-    '  -b/--binary, $MACHO_BINARY or $MACHO_APP.',
-  ]);
+const HELP = [
+  'usage: node src/symlookup.mjs <hex-vaddr> [<hex-vaddr> ...] [--json] [--arch=<name>] [-b <binary>]',
+  '',
+  '  every positional argument is an address, so the binary comes from',
+  '  -b/--binary, $MACHO_BINARY or $MACHO_APP.',
+  '',
+  'options:',
+  '  --arch=<name>      read one architecture (x86_64, arm64)',
+  '  -b, --binary <p>   the binary to read',
+  '  --json             one JSON object on stdout; prose to stderr',
+  '  -h, --help         this message',
+];
+
+if (flags.has('help') || flags.has('h')) {
+  process.stdout.write(HELP.join('\n') + '\n');
+  process.exit(EXIT.ok);
 }
+
+if (positional.length === 0) usage(HELP);
 
 const binary = requireBinary({ argv: opts.binary || opts.b });
 const arch = opts.arch;
@@ -59,17 +70,29 @@ for (const arg of positional) {
   try {
     results.push(lookupAddress(binary, BigInt(arg), { arch }));
   } catch (e) {
+    // Two different problems arrive here and they need different codes: a
+    // reader failure (`io`/`unknown-encoding`, exit 3) means the file is the
+    // problem, while anything else means this particular address was. Calling
+    // both `bad-address` sent a caller to fix its query when the binary was
+    // simply not there.
+    const reader = typeof e.code === 'string' && e.code !== 'bad-address';
+    const code = reader ? e.code : 'bad-address';
+    const exit = reader ? EXIT.fail : EXIT.usage;
     if (flags.has('json')) {
-      emitJSON({ tool: 'symlookup', binary, ok: false, errors: ['bad-address'],
-        messages: [`${arg}: ${e.message}`] }, EXIT.usage);
+      emitJSON({ tool: 'symlookup', binary, ok: false, errors: [code],
+        messages: [`${arg}: ${e.message}`] }, exit);
     }
     console.error(`${arg}: ${e.message}`);
-    process.exit(EXIT.usage);
+    process.exit(exit);
   }
 }
 
+// Computed once and used by both output modes, so the exit status cannot depend
+// on whether `--json` was passed.
+const resolved = results.filter((r) => r.function).length;
+
 if (flags.has('json')) {
-  const found = results.filter((r) => r.function).length;
+  const found = resolved;
   emitJSON({
     tool: 'symlookup',
     binary,
@@ -77,7 +100,15 @@ if (flags.has('json')) {
     notes: found === 0
       ? ['no address resolved — the slice is stripped, or the addresses are outside it']
       : null,
-    data: { queries: results, resolved: found, asked: results.length },
+    data: {
+      queries: results,
+      resolved: found,
+      asked: results.length,
+      // Counted separately from `resolved`, because an address that resolved to
+      // a name shared with others is a weaker answer than one that resolved alone
+      // and a caller summing `resolved` should be able to tell the difference.
+      ambiguous: results.filter((r) => r.aliases).length,
+    },
   }, found ? EXIT.ok : EXIT.empty);
 }
 
@@ -93,5 +124,16 @@ for (const r of results) {
   console.log(`  function : ${r.function}`);
   console.log(`  starts   : 0x${r.start.toString(16)}  (offset into function: 0x${r.offset.toString(16)})`);
   if (r.next !== null) console.log(`  ends     : 0x${r.next.toString(16)}  (size ~${r.size} bytes)`);
+  // Several symbols can start at one address — Go's linker writes zero-size
+  // region markers beside real symbols, and a C library aliases one name under
+  // several. Nothing in the symbol table says which is a function, so the size
+  // above may be an artefact of the next unrelated symbol. Saying so beats
+  // printing a byte count that looks measured and is not.
+  if (r.aliases) console.log(`  also at  : ${r.aliases.join(', ')} — this address is not one symbol's alone`);
   console.log();
 }
+
+// An address that resolves to nothing is a negative result, not a failure — and
+// this was the fourth text path that fell off the end and exited 0 while its
+// `--json` twin exited 1.
+process.exit(resolved ? EXIT.ok : EXIT.empty);

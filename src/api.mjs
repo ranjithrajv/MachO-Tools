@@ -42,14 +42,50 @@
  * grow.
  */
 
+import fs from 'node:fs';
 import {
   opener, isMachOFile, slicesOf, parseThin, readSymbols, preferredSlice,
   richestSlice, sliceName, textSection, codeSections, sectionOf, toVaddr,
+  toFileOffset, isBackedByFile,
 } from './macho.mjs';
 
 /* ------------------------------------------------------------------ *
  * opening
  * ------------------------------------------------------------------ */
+
+/**
+ * An error that names its reason code, so a caller does not have to read it.
+ *
+ * These are the same codes the JSON envelope publishes as `errors`, which is
+ * what makes the contract usable from a program rather than a person: an agent
+ * asking for `/nope` and for `/etc/hosts` gets two different codes and can act
+ * on that, where before both arrived as `io` with the message "not a Mach-O
+ * binary" — two unrelated problems reported as one, sending a caller looking in
+ * the wrong place.
+ *
+ * @param {string} path
+ * @returns {Error & { code: string }}
+ */
+function readerError(path) {
+  // `statSync` rather than `existsSync` because the interesting case is a path
+  // that is *there* and still unreadable — a directory, a dangling symlink, a
+  // permissions problem — which `existsSync` reports as simply absent and so
+  // would mislabel as a missing file rather than an unreadable one.
+  let readable = true;
+  try {
+    if (fs.statSync(path).isDirectory()) readable = false;
+  } catch {
+    readable = false;
+  }
+  return Object.assign(
+    new Error(
+      readable
+        ? `${path}: not a Mach-O binary`
+        : `${path}: cannot be read (no such file, not a regular file, or not permitted)`,
+    ),
+    { code: readable ? 'unknown-encoding' : 'io' },
+  );
+}
 
 /**
  * Open a binary, hand it to `fn`, close it afterwards.
@@ -62,11 +98,15 @@ import {
  * @param {string} path
  * @param {(f: object) => T} fn
  * @returns {T} whatever `fn` returns
- * @throws if the path cannot be opened or is not a Mach-O
+ * @throws if the path cannot be opened or is not a Mach-O. The thrown error
+ *   carries `.code`, one of the reason codes the JSON envelope documents —
+ *   `io` for a path that cannot be read, `unknown-encoding` for a file that
+ *   reads fine but is not Mach-O — so a caller can branch without matching
+ *   English.
  */
 export function withFile(path, fn) {
   if (typeof path !== 'string' || !path) throw new TypeError('withFile: a path is required');
-  if (!isMachOFile(path)) throw new Error(`${path}: not a Mach-O binary`);
+  if (!isMachOFile(path)) throw readerError(path);
   const f = opener(path);
   try {
     return fn(f);
@@ -120,6 +160,215 @@ export function describe(path) {
       fat: slices.length > 1 || slices.every((s) => !s.thin),
       slices,
     };
+  });
+}
+
+/* ------------------------------------------------------------------ *
+ * address <-> file offset
+ * ------------------------------------------------------------------ */
+
+/** A file position or address as a hex string, for the wire. */
+const hex = (v) => `0x${v.toString(16)}`;
+
+/**
+ * Which slice an address or offset query should read.
+ *
+ * `symbolSlice` is the wrong choice here even though the fallback logic matches:
+ * it picks the slice with the most *symbols*, and a stripped slice can be the one
+ * whose layout you are asking about. An address is a question about a
+ * particular slice's mapping, so `--arch` selects it when given and otherwise the
+ * first slice that parses — the order the fat header lists, which is the order
+ * the file itself declares. For a thin binary both agree.
+ */
+function layoutSlice(f, arch) {
+  return layoutSlices(f, arch)[0];
+}
+
+/**
+ * Every slice an address or offset query should consider.
+ *
+ * `symbolSlice` is the wrong choice here even though the fallback logic looks
+ * similar: it picks the slice with the most *symbols*, and a stripped slice can
+ * be the one whose layout you are asking about. Layout is a question about a
+ * particular slice, so all of them are returned and the caller reports a single
+ * answer only when exactly one slice agrees.
+ */
+function layoutSlices(f, arch) {
+  if (arch) {
+    const named = preferredSlice(f, arch);
+    // A preference, not a requirement, matching every other tool here: an absent
+    // architecture falls through to the whole file rather than failing.
+    if (named) return [named];
+  }
+  const out = [];
+  for (const s of slicesOf(f)) {
+    const thin = parseThin(f, s.offset);
+    if (thin) {
+      out.push({
+        offset: s.offset,
+        arch: s.thin ? sliceName(thin.cputype) : sliceName(s.cputype),
+        thin,
+        size: s.size,
+      });
+    }
+  }
+  if (out.length === 0) throw new Error('no Mach-O slice could be parsed');
+  return out;
+}
+
+/**
+ * The shape both directions report, so one row means the same thing either way.
+ *
+ * `query`, `vaddr` and `offset` are hex strings, not numbers. A 64-bit file
+ * position does not survive a `Number` and a BigInt does not survive
+ * `JSON.stringify`, so a caller reading the envelope would otherwise get either a
+ * thrown error or a silent precision loss — and this package already emits every
+ * other address this way for the same reason.
+ */
+function mappingRow(slice, query, m) {
+  return {
+    arch: slice.arch,
+    query: hex(query),
+    // Taken from the mapping rather than echoed from the query: in one direction
+    // the query *is* the vaddr and in the other it is a file offset, and a row
+    // whose `vaddr` silently reported whichever was asked about would be wrong
+    // half the time.
+    vaddr: m.vaddr === null || m.vaddr === undefined ? hex(query) : hex(m.vaddr),
+    offset: m.offset ?? null,
+    // Absolute, for a file with more than one slice: a section's `offset` is
+    // relative to its slice, so reporting it unqualified would send a reader to
+    // the wrong bytes in every slice but the first.
+    absoluteOffset: m.offset === null || m.offset === undefined ? null : slice.offset + m.offset,
+    section: m.section,
+    zerofill: m.zerofill === true,
+    mapped: true,
+    note: null,
+  };
+}
+
+function unmappedRow(slice, query, note) {
+  return {
+    arch: slice.arch, query: hex(query), vaddr: null, offset: null, absoluteOffset: null,
+    section: null, zerofill: false, mapped: false, note,
+  };
+}
+
+/**
+ * Virtual address to file offset: which byte of the file is this address?
+ *
+ * `offset` is slice-relative — the same basis the section table uses — and
+ * `absoluteOffset` adds the slice's own position in the file. Both are reported
+ * because a reader patching a file needs the absolute one and a reader
+ * comparing against `otool -l` output needs the relative one, and guessing which
+ * was meant is how the wrong bytes get edited.
+ *
+ * `zerofill` is true for an address that is mapped but has no bytes: `__bss`,
+ * `__noptrbss`, `__PAGEZERO`, and the tail of a segment past `filesize`. Those
+ * are separate answers from `mapped: false`, and a caller that wants to read or
+ * write the byte has to treat them differently.
+ */
+export function addressToOffset(path, vaddr, { arch } = {}) {
+  const want = typeof vaddr === 'bigint' ? vaddr : BigInt(vaddr);
+  return withFile(path, (f) => {
+    const slices = layoutSlices(f, arch);
+    const per = [];
+    for (const slice of slices) {
+      const m = toFileOffset(slice.thin, want);
+      if (!m) {
+        per.push(unmappedRow(slice, want, 'address is not mapped by this slice'));
+        continue;
+      }
+      const row = mappingRow(slice, want, m);
+      row.note = m.zerofill
+        ? `${m.section} is zero-fill — mapped at this address, but no byte of it exists in the file`
+        : null;
+      per.push(row);
+    }
+
+    const mapped = per.filter((r) => r.mapped);
+    if (mapped.length === 1) return mapped[0];
+
+    // More than one slice maps the address, or none does. Both are reported
+    // rather than resolved, because picking a slice is a choice about which
+    // binary you meant, and a fat binary's slices share an address space by
+    // construction — `__TEXT` starts at 0x100000000 in every one of them.
+    if (mapped.length === 0) {
+      return {
+        ...unmappedRow(per[0], want, 'address is not mapped by any slice'),
+        slices: per,
+      };
+    }
+    return {
+      arch: null,
+      query: hex(want),
+      vaddr: hex(want),
+      offset: null,
+      absoluteOffset: null,
+      section: null,
+      zerofill: false,
+      mapped: true,
+      ambiguous: true,
+      slices: per,
+      note: `${mapped.length} slices map this address — pass --arch to choose one`,
+    };
+  });
+}
+
+/**
+ * File offset to virtual address: which address does this byte have?
+ *
+ * `query` is reported as the slice-relative offset, since that is the basis
+ * `toVaddr` uses; an absolute offset is accepted and converted when it falls in
+ * this slice. Offsets in no slice are reported per slice rather than rejected, so
+ * a fat binary answers for all of them in one call.
+ *
+ * A file offset can belong to more than one slice's *layout* only if the slices
+ * overlap, which a well-formed fat binary does not do. Where they do, every
+ * slice that maps the offset is reported, because picking one would be a guess.
+ */
+export function offsetToAddress(path, offsets, { arch } = {}) {
+  const list = Array.isArray(offsets) ? offsets : [offsets];
+  return withFile(path, (f) => {
+    const candidates = layoutSlices(f, arch);
+
+    const queries = list.map((raw) => {
+      const abs = typeof raw === 'bigint' ? raw : BigInt(raw);
+      // Offsets are absolute positions in the file. Each slice's row also carries
+      // its own slice-relative offset, because a `section_64`'s `offset` is
+      // relative to the slice and the two differ on every slice but the first.
+      const per = [];
+      for (const s of candidates) {
+        // `s.offset` is a Number (a file position) and `abs` a BigInt (an
+        // address-shaped quantity), so the subtraction is done in BigInt and
+        // narrowed after. Mixing them directly throws.
+        const rel = abs >= BigInt(s.offset) ? Number(abs - BigInt(s.offset)) : null;
+        if (rel === null) {
+          per.push(unmappedRow(s, abs, 'offset is before this slice in the file'));
+          continue;
+        }
+        const m = toVaddr(s.thin, rel);
+        if (!m) {
+          per.push(unmappedRow(s, abs, 'no section or segment in this slice maps that offset'));
+          continue;
+        }
+        // `m.vaddr` is the address this offset resolves to; `query` is the offset
+        // that was asked about. Both are carried, and they differ on every slice
+        // but the first.
+        per.push(mappingRow(s, abs, { ...m, offset: rel }));
+      }
+      const mapped = per.filter((r) => r.mapped);
+      return {
+        query: hex(abs),
+        basis: 'absolute',
+        slices: per,
+        // The one mapping, when there is exactly one. More than one is reported
+        // rather than picked, and so is none.
+        vaddr: mapped.length === 1 ? mapped[0].vaddr : null,
+        ambiguous: mapped.length > 1,
+      };
+    });
+
+    return { path, queries, slices: candidates.map((s) => ({ arch: s.arch, offset: s.offset })) };
   });
 }
 
@@ -235,12 +484,14 @@ export function lookupAddress(path, vaddr, { arch } = {}) {
     if (defs.length === 0) {
       return {
         arch: slice.arch, vaddr: target, function: null, start: null, next: null,
-        offset: null, size: null,
+        offset: null, size: null, aliases: null,
         note: 'no defined symbols in this slice — stripped, or a dyld-cache stub',
       };
     }
 
-    // Last defined symbol at or below the target.
+    // Last defined symbol at or below the target. Note that this alone cannot tell
+    // a real answer from a fabricated one; the coverage guard below is what makes
+    // the result trustworthy outside the mapped range.
     let lo = 0;
     let hi = defs.length - 1;
     let best = -1;
@@ -251,7 +502,7 @@ export function lookupAddress(path, vaddr, { arch } = {}) {
     if (best < 0) {
       return {
         arch: slice.arch, vaddr: target, function: null, start: null, next: null,
-        offset: null, size: null,
+        offset: null, size: null, aliases: null,
         note: 'no defined symbol at or below this address',
       };
     }
@@ -262,11 +513,85 @@ export function lookupAddress(path, vaddr, { arch } = {}) {
     while (at > 0 && defs[at - 1].name === defs[best].name) at--;
     const start = defs[at].addr;
     const next = defs[best + 1] ? defs[best + 1].addr : null;
+
+    // Whether this slice maps the target at all — checked here, after the
+    // search, because the search alone cannot tell a real answer from a
+    // fabricated one.
+    //
+    // A symbol table records where code *starts*, not where the slice *ends*, so
+    // "the last symbol at or below the target" is a real answer only while the
+    // target is inside the mapped range. Past the end it is a guess: every
+    // address above the last symbol resolved to that last symbol, so
+    // `0xffffffffffffffff` came back as `_runtime.enoptrbss` at an offset of
+    // `0xfffffffefd35fc3f`. A wrong offset is worse than a missing one, because
+    // it looks like a measurement. `findCalls` and `mapLiteral` already ask this
+    // question, so skipping it here made the three disagree about one address in
+    // one binary.
+    //
+    // `target === start` is exempt, and the exemption is load-bearing. A BSS
+    // symbol can sit exactly at the end of its segment — in Go's `go`,
+    // `_runtime.enoptrbss` is at `0x102ca03c0`, which is precisely
+    // `__DATA.vmaddr + __DATA.vmsize` and therefore one past the last mapped
+    // byte. That address is a real function entry and must still resolve;
+    // guarding before the search rejected it and turned a correct answer into a
+    // negative one. So: a symbol's own entry point always resolves, and coverage
+    // only decides the addresses *between* and *beyond* symbols.
+    if (target !== start && !coversAddress(slice.thin, target)) {
+      return {
+        arch: slice.arch, vaddr: target, function: null, start: null, next: null,
+        offset: null, size: null, aliases: null,
+        note: 'address is not mapped by this slice — nothing here to resolve',
+      };
+    }
+
+    // Other symbols starting at exactly this address, when the answer is not the
+    // only one.
+    const aliases = symbolsStartingAt(defs, target, defs[at].name);
+
     return {
       arch: slice.arch, vaddr: target, function: defs[at].name, start, next,
-      offset: target - start, size: next === null ? null : next - start, note: null,
+      offset: target - start, size: next === null ? null : next - start,
+      aliases: aliases.length ? aliases : null, note: null,
     };
   });
+}
+
+/**
+ * Distinct names, other than `chosen`, that start at exactly `target`.
+ *
+ * Several symbols sharing one address is ordinary, not exotic. Go's linker
+ * writes zero-size region markers next to real symbols — in `go`,
+ * `_go:buildid` and `_runtime.text` both sit at `0x100001000`, and four symbols
+ * share `0x10091ac0`-style addresses — and a C library may alias an implementation
+ * under several names.
+ *
+ * `nlist_64` carries no size field, so nothing in the symbol table distinguishes
+ * a zero-size marker from a real function. Picking one name and reporting a
+ * `size` derived from the next unrelated symbol therefore presents a linker
+ * bookkeeping entry as a function of 112 bytes. That is the same defect as a
+ * fabricated offset: a number shaped like a measurement that no one measured.
+ * So the answer keeps its choice — deterministic, and a symbol that genuinely
+ * starts here — and discloses the alternatives rather than implying it is the
+ * only one.
+ *
+ * `defs` is sorted by address, so equal addresses are contiguous and the run is
+ * found by a lower-bound search plus a walk. Bounded by the size of the run, not
+ * by the table.
+ */
+function symbolsStartingAt(defs, target, chosen) {
+  let lo = 0;
+  let hi = defs.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (defs[mid].addr < target) lo = mid + 1;
+    else hi = mid;
+  }
+  const names = [];
+  for (let i = lo; i < defs.length && defs[i].addr === target; i++) {
+    const name = defs[i].name;
+    if (name !== chosen && names[names.length - 1] !== name) names.push(name);
+  }
+  return names;
 }
 
 const byAddr = (a, b) => (a.addr < b.addr ? -1 : a.addr > b.addr ? 1 : 0);

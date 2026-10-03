@@ -26,14 +26,34 @@
  * `code sections` column is usually much smaller than the file, and the gap is
  * the data that an untyped scan used to report as call sites.
  */
-import { requireBinary } from './target.mjs';
+import { requireBinary, FALLBACK_TARGET } from './target.mjs';
 import { describe } from './api.mjs';
 import { parseArgs, emitJSON, usage, count, EXIT } from './output.mjs';
 
 const { flags, opts, positional } = parseArgs(process.argv.slice(2));
-if (flags.size && !flags.has('json')) {
-  usage(['usage: node src/describe.mjs [binary|bundle] [--json] [-b <binary>]']);
+
+const HELP = [
+  'usage: node src/describe.mjs [binary|bundle] [--json] [-b <binary>]',
+  '',
+  '  what is in this binary: every slice, its architecture, extent, symbol',
+  `  counts and where __TEXT starts. Defaults to $MACHO_BINARY, then $MACHO_APP,`,
+  `  then ${FALLBACK_TARGET}`,
+  '',
+  'options:',
+  '  --json             one JSON object on stdout; prose to stderr',
+  '  -b, --binary <p>   the binary to read',
+  '  -h, --help         this message',
+];
+
+// Handled before the unknown-flag check below, or `--help` would be reported as
+// an unrecognised option — the one flag every tool must accept, rejected by the
+// tool whose whole job is being the first thing you run.
+if (flags.has('help') || flags.has('h')) {
+  process.stdout.write(HELP.join('\n') + '\n');
+  process.exit(EXIT.ok);
 }
+
+if (flags.size && !flags.has('json')) usage([HELP[0]]);
 
 const binary = requireBinary({ argv: opts.b || opts.binary || positional[0] });
 
@@ -42,7 +62,7 @@ try {
   r = describe(binary);
 } catch (e) {
   if (flags.has('json')) {
-    emitJSON({ tool: 'describe', binary, ok: false, errors: ['io'], messages: [e.message] }, EXIT.fail);
+    emitJSON({ tool: 'describe', binary, ok: false, errors: [e.code ?? 'io'], messages: [e.message] }, EXIT.fail);
   }
   console.error(`${binary}: ${e.message}`);
   process.exit(EXIT.fail);

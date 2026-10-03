@@ -24,6 +24,32 @@ Only defined, address\-bearing symbols are considered. Imported symbols carry a
 null address, so including them would make any low address resolve to an import
 sitting at zero \(em a confident, plausible and wrong answer.
 .PP
+An address the chosen slice does not map resolves to nothing, and says so. A
+symbol table records where code
+.I starts
+, not where the slice
+.I ends
+, so without that check every address above the last symbol would resolve to
+that symbol, at an offset of billions of bytes. A symbol's own entry point still
+resolves even where it sits one past the last mapped byte, which is where a BSS
+symbol can land.
+.PP
+Where several symbols start at the same address, the alternatives are named
+rather than left implicit. Go's linker writes zero\-size region markers beside
+real symbols \(em in
+.BR go ,
+both
+.B _go:buildid
+and
+.B _runtime.text
+sit at 0x100001000 \(em and
+.BR nlist_64
+has no size field, so nothing in the table separates a marker from a function. The
+reported size is then a bound rather than a measurement. Under
+.BR \-\-json ,
+.B data.ambiguous
+counts the queries that resolved to a name shared with others.
+.PP
 Every positional argument is an address, so the binary comes from
 .B \-b
 or from the environment rather than from the last positional.

@@ -1,0 +1,30 @@
+#compdef macho-mcp
+#
+# zsh completion for macho-mcp. Install as _macho-mcp in a directory on your
+# $fpath.
+#
+# MachO-Tools 0.1.0.
+#
+# There is almost nothing to complete: the server takes no arguments other than
+# --help and --version, and everything else happens over the protocol on stdin.
+# The single useful completion is therefore the binary itself — a user typing
+# `macho-mcp <TAB>` here is usually confirming a path from a config file, and
+# offering files turns a mistyped path in `.mcp.json` into something visible
+# before the client fails to launch.
+
+_macho_mcp() {
+    _arguments -s \
+        '(-h --help)'{-h,--help}'[print usage on stderr and exit]' \
+        '(-v --version)'{-v,--version}'[print the version on stderr and exit]' \
+        '*: :->args'
+
+    case $state in
+        args)
+            # An MCP client is launched by path, so anything here that is not a
+            # recognised flag is a mistake worth showing as one.
+            _message 'macho-mcp takes no arguments; it speaks JSON-RPC on stdin/stdout'
+            ;;
+    esac
+}
+
+_macho_mcp "$@"

@@ -97,7 +97,20 @@ const arch = opts.arch;
 const json = flags.has('json');
 const regexFlags = flags.has('case-sensitive') ? '' : 'i';
 
-const r = searchSymbols(binary, pattern, { mode, definedOnly, dedupe, max, arch, flags: regexFlags });
+let r;
+try {
+  r = searchSymbols(binary, pattern, { mode, definedOnly, dedupe, max, arch, flags: regexFlags });
+} catch (e) {
+  // A reader failure has to reach the caller as the same envelope every other
+  // path emits. Without this the `--json` contract held only for a binary that
+  // happened to be readable, and a consumer got an unhandled rejection instead
+  // of a reason code — which is the one situation where it most needs one.
+  const code = e instanceof SyntaxError ? 'bad-pattern' : (e.code ?? 'io');
+  const exit = code === 'bad-pattern' ? EXIT.usage : EXIT.fail;
+  if (json) emitJSON({ tool: 'sym', binary, ok: false, errors: [code], messages: [e.message] }, exit);
+  console.error(`${binary}: ${e.message}`);
+  process.exit(exit);
+}
 
 if (r.note) {
   const msg = `${binary}: ${r.note} (${r.arch}) — nothing to search`;
@@ -142,3 +155,9 @@ if (r.matches.length === 0) {
   console.log('  none. If this binary is stripped there are no names to match against —');
   console.log('  symlookup and findcall read addresses and bytes instead, and still work.');
 }
+
+// The same exit status in both modes. This was missing here and present in the
+// `--json` branch above, so the same search answered 1 under `--json` and 0
+// without it — a caller branching on the status got a different answer
+// depending on a flag that is supposed to change only the output format.
+process.exit(r.matches.length ? EXIT.ok : EXIT.empty);

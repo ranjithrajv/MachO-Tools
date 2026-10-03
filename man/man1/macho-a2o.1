@@ -1,0 +1,133 @@
+.TH MACHO\-A2O 1 "October 3, 2026" "MachO-Tools 0.1.0" "User Commands"
+.SH NAME
+macho\-a2o \- map a virtual address to a file offset
+.SH SYNOPSIS
+.B macho\-a2o
+.I hex-vaddr
+.RI [ hex-vaddr ...]
+.RB [ \-\-json ]
+.RB [ \-\-arch= name ]
+.RB [ \-b | \-\-binary
+.IR path ]
+.RB [ \-h | \-\-help ]
+.SH DESCRIPTION
+Reports which byte of the file each given virtual address corresponds to, together
+with the section it falls in and the slice it belongs to.
+.PP
+Every address a tool reports is a virtual address, because that is what a call site
+or a symbol refers to. Every position a hex editor, a
+.BR dd (1)
+pipeline or a patch script wants is a file offset. Converting between them means
+reading the section table by hand.
+.PP
+Both offsets are reported.
+.B offset
+is slice\-relative, matching what the section table records, and
+.B absoluteOffset
+adds the slice's own position in the file. On a thin binary they are equal. On a
+universal binary they are not, and reporting only one of them is how a reader ends
+up editing the wrong bytes: in
+.IR /bin/ls ,
+whose x86_64 slice begins at 0x4000,
+.B __TEXT
+at relative offset 0 is at absolute 0x4000.
+.SH ZERO\-FILL
+.BR __bss ,
+.B __noptrbss
+and
+.B __PAGEZERO
+have addresses and sizes but no bytes in the file: the loader supplies zeros, and
+the linker records such a section's file offset as 0. An address there is
+.IR mapped ,
+so reporting "not found" would be wrong, and reporting a file offset would be
+worse, since there is no byte to read.
+.PP
+Such an address is reported as
+.B zerofill
+with no offset, which is a third answer distinct from both "mapped to a byte" and
+"not in this binary". It counts as a successful run.
+.SH OPTIONS
+.TP
+.BI \-\-arch= name
+Read one architecture,
+.B x86_64
+or
+.BR arm64 .
+A universal binary maps
+.B __TEXT
+at 0x100000000 in
+.I every
+slice, so without this flag an address in it is reported as ambiguous rather than
+guessed.
+.TP
+.BR \-b ", " \-\-binary " " \fIpath\fR
+The binary to read. Required in practice: every positional argument is an address,
+so a path cannot be told apart from a query by position.
+.TP
+.B \-\-json
+Write one JSON object to standard output and send all prose to standard error.
+Addresses are rendered as
+.B "0x..."
+strings: a 64\-bit virtual address does not survive a JSON number.
+.TP
+.B \-h ", " \-\-help
+Print usage and exit 0.
+.SH ENVIRONMENT
+.TP
+.B MACHO_BINARY
+The binary to read when none is given.
+.TP
+.B MACHO_APP
+An application bundle to read, tried after
+.BR MACHO_BINARY .
+.TP
+.B MACHO_CONFIG
+Path to a replacement
+.IR config.json .
+.SH EXIT STATUS
+.TP
+.B 0
+At least one address was mapped, whether or not it reached a byte.
+.TP
+.B 1
+The tool ran and no address was mapped by any slice. A negative result, not a
+failure.
+.TP
+.B 2
+Usage error, including an address that is not hexadecimal with an
+.B 0x
+prefix.
+.TP
+.B 3
+The file could not be read or parsed.
+.SH EXAMPLES
+.PP
+.RS
+.nf
+macho\-a2o 0x100001000 \-b /usr/local/go/bin/go
+macho\-a2o \-\-json 0x100001000 \-b /usr/local/go/bin/go | jq '.data.queries[0].offset'
+.fi
+.RE
+.PP
+Read six bytes from the file at an address reported by another tool:
+.PP
+.RS
+.nf
+macho\-a2o \-\-json 0x100085c30 \-b /usr/local/go/bin/go |
+  jq -r '.data.queries[0].absoluteOffset' |
+  xargs -I{} dd if=/usr/local/go/bin/go bs=1 skip={} count=6 2>/dev/null
+.fi
+.RE
+.SH NOTES
+Every positional argument is an address, so the binary comes from
+.B \-b
+rather than from the last positional. This is the same rule
+.BR macho\-symlookup (1)
+follows, and for the same reason: a path guessed from whether it looks like a
+query turns a typo into a confident wrong answer.
+.SH SEE ALSO
+.BR macho\-o2a (1),
+.BR macho\-symlookup (1),
+.BR macho\-describe (1),
+.BR otool (1),
+.BR nm (1)

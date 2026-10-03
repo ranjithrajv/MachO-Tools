@@ -206,11 +206,31 @@ export declare function preferredSlice(
   prefer?: string,
 ): { offset: number; arch: string; nsyms: number; thin: Thin; size: number } | null;
 
-/** Map a file offset to a vaddr within a parsed slice, or null if unmapped. */
+/**
+ * Map a file offset to a vaddr within a parsed slice, or null if unmapped.
+ *
+ * Zero-fill sections are skipped: they have no bytes in the file, so an offset
+ * inside one belongs to whatever actually occupies that range.
+ */
 export declare function toVaddr(
   thin: Thin,
   fileOff: number,
 ): { vaddr: bigint; section: string } | null;
+
+/**
+ * Map a vaddr to a slice-relative file offset within a parsed slice, or null.
+ *
+ * `zerofill: true` means the address is mapped but has no byte in the file —
+ * `__bss`, `__PAGEZERO`, or a segment tail past `filesize`. That is a different
+ * answer from `null`, which means the address is not in this slice at all.
+ */
+export declare function toFileOffset(
+  thin: Thin,
+  vaddr: Vaddr,
+): { offset: number | null; zerofill: boolean; section: string; segname: string } | null;
+
+/** True when a section occupies bytes in the file rather than being zero-fill. */
+export declare function isBackedByFile(thin: Thin, sec: Section): boolean;
 
 /** The section containing a slice-relative file offset, or null. */
 export declare function sectionOf(thin: Thin, fileOff: number): Section | null;
@@ -253,6 +273,76 @@ export declare function describe(path: string): {
     textSize: number;
     codeSections: number;
   }>;
+};
+
+/**
+ * One address/offset mapping. Three outcomes, kept apart on purpose.
+ *
+ * `query` and `vaddr` are hex strings. A 64-bit vaddr does not survive a `Number`
+ * and a BigInt does not survive `JSON.stringify`, so a numeric field here would
+ * either throw or lose precision silently. Offsets stay numeric because a file
+ * position is far below 2^53 in practice and is arithmetic rather than identity.
+ */
+export interface OffsetRow {
+  arch: string | null;
+  /** What was asked: a vaddr for `a2o`, a file offset for `o2a`. */
+  query: string;
+  /** The address this row maps to, as `0x…`. Null only when unmapped. */
+  vaddr: string | null;
+  /** Slice-relative, matching the section table. Null when zero-fill or unmapped. */
+  offset: number | null;
+  /** `offset` plus the slice's position in the file. Null when there is no byte. */
+  absoluteOffset: number | null;
+  /** `__TEXT,__text`, or `__DATA (segment)` for a range no section covers. */
+  section: string | null;
+  /** Mapped in memory but absent from the file: `__bss`, `__PAGEZERO`. */
+  zerofill: boolean;
+  /** False when no slice maps the address at all. */
+  mapped: boolean;
+  /** True when several slices map it — a universal binary maps 0x100000000 in each. */
+  ambiguous?: boolean;
+  /** Per-slice detail, present when `ambiguous` or `mapped` is false. */
+  slices?: OffsetRow[];
+  note: string | null;
+}
+
+/**
+ * Virtual address to file offset.
+ *
+ * Returns one row when exactly one slice maps the address. On a universal binary
+ * without `arch`, every slice maps `0x100000000` by construction, so the row
+ * comes back `ambiguous` with `slices` filled in rather than guessing which
+ * binary was meant.
+ */
+export declare function addressToOffset(
+  path: string,
+  vaddr: Vaddr,
+  opts?: { arch?: string },
+): OffsetRow;
+
+/**
+ * File offset to virtual address, for one or more offsets.
+ *
+ * Offsets are absolute positions in the file; each slice's row also carries its
+ * own slice-relative offset. Every slice is examined, because the same offset
+ * means a different address in each.
+ */
+export declare function offsetToAddress(
+  path: string,
+  offsets: Vaddr | Vaddr[],
+  opts?: { arch?: string },
+): {
+  path: string;
+  queries: Array<{
+    /** The absolute file offset asked about, as `0x…`. */
+    query: string;
+    basis: 'absolute';
+    slices: OffsetRow[];
+    /** The single mapping as `0x…`, or null when none or more than one. */
+    vaddr: string | null;
+    ambiguous: boolean;
+  }>;
+  slices: Array<{ arch: string; offset: number }>;
 };
 
 /**
@@ -299,6 +389,16 @@ export declare function searchSymbols(
  *
  * Only defined, address-bearing symbols are considered. `function` is null with
  * a `note` when nothing resolves — a negative answer, not an error.
+ *
+ * An address the slice does not map resolves to null, with a note saying so,
+ * rather than to the last symbol below it. A symbol's own entry point always
+ * resolves even where it sits one past the last mapped byte, which is where a
+ * BSS symbol can land.
+ *
+ * `aliases` lists the other names starting at the same address, or is null when
+ * the answer is the only one. `nlist_64` has no size field, so a zero-size
+ * linker region marker is indistinguishable from a real function here; where
+ * `aliases` is set, treat `size` as a bound rather than a measurement.
  */
 export declare function lookupAddress(
   path: string,
@@ -312,6 +412,7 @@ export declare function lookupAddress(
   next: bigint | null;
   offset: bigint | null;
   size: bigint | null;
+  aliases: string[] | null;
   note: string | null;
 };
 

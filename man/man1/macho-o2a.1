@@ -1,0 +1,122 @@
+.TH MACHO\-O2A 1 "October 3, 2026" "MachO-Tools 0.1.0" "User Commands"
+.SH NAME
+macho\-o2a \- map a file offset to a virtual address
+.SH SYNOPSIS
+.B macho\-o2a
+.I offset
+.RI [ offset ...]
+.RB [ \-\-json ]
+.RB [ \-\-arch= name ]
+.RB [ \-b | \-\-binary
+.IR path ]
+.RB [ \-h | \-\-help ]
+.SH DESCRIPTION
+Reports which virtual address each given file offset corresponds to, together with
+the section it falls in and the slice it belongs to. The inverse of
+.BR macho\-a2o (1).
+.PP
+Offsets are absolute positions in the file, accepted as decimal or as hex with a
+.B 0x
+prefix. The prefix is required for hex so that
+.B 10
+is never silently read as
+.BR 0x10 .
+.SH SLICES
+A
+.B section_64
+structure's
+.B offset
+is relative to the start of its
+.IR slice ,
+so on a universal binary a relative offset and a position in the file are different
+numbers. In
+.IR /bin/ls ,
+whose x86_64 slice begins at 0x4000 and whose arm64 slice begins at 0x10000, the same
+relative offset names different bytes in each.
+.PP
+Every slice is examined and each answer attributed to the one that produced it,
+because the same file offset is a different address in each. Where more than one
+slice maps an offset, that is reported rather than resolved.
+.SH OFFSETS THAT MAP TO NOTHING
+The Mach-O header and the load commands lie inside
+.BR __TEXT 's
+segment range but in no section, so they resolve to a real address with no section
+name. That is an answer, not a gap. Past the last mapped byte, nothing maps at all,
+and that is a negative result.
+.SH OPTIONS
+.TP
+.BI \-\-arch= name
+Read one architecture,
+.B x86_64
+or
+.BR arm64 .
+.TP
+.BR \-b ", " \-\-binary " " \fIpath\fR
+The binary to read. Every positional argument is an offset, so the binary cannot be
+taken from the last one.
+.TP
+.B \-\-json
+Write one JSON object to standard output and send all prose to standard error.
+Addresses are rendered as
+.B "0x..."
+strings: a 64\-bit virtual address does not survive a JSON number.
+.TP
+.B \-h ", " \-\-help
+Print usage and exit 0.
+.SH ENVIRONMENT
+.TP
+.B MACHO_BINARY
+The binary to read when none is given.
+.TP
+.B MACHO_APP
+An application bundle to read, tried after
+.BR MACHO_BINARY .
+.TP
+.B MACHO_CONFIG
+Path to a replacement
+.IR config.json .
+.SH EXIT STATUS
+.TP
+.B 0
+At least one offset resolved to an address.
+.TP
+.B 1
+The tool ran and no offset mapped. A negative result, not a failure.
+.TP
+.B 2
+Usage error, including an offset that is neither decimal nor
+.BR 0x -prefixed hex.
+.TP
+.B 3
+The file could not be read or parsed.
+.SH EXAMPLES
+.PP
+.RS
+.nf
+macho\-o2a 0x1000 \-b /usr/local/go/bin/go
+macho\-o2a \-\-json 0x1000 \-b /usr/local/go/bin/go | jq '.data.queries[0].vaddr'
+.fi
+.RE
+.PP
+Follow a literal's file offset from
+.BR macho\-findliteral (1)
+to the address a symbol lookup needs:
+.PP
+.RS
+.nf
+macho\-o2a \-\-json 0x59d140 \-b /usr/local/go/bin/go | jq -r '.data.queries[0].vaddr'
+.fi
+.RE
+.SH NOTES
+Every positional argument is an offset, so the binary comes from
+.B \-b
+rather than from the last positional, for the same reason
+.BR macho\-symlookup (1)
+does it that way.
+.SH SEE ALSO
+.BR macho\-a2o (1),
+.BR macho\-findliteral (1),
+.BR macho\-mapliteral (1),
+.BR macho\-describe (1),
+.BR otool (1),
+.BR nm (1)

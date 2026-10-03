@@ -1,13 +1,13 @@
 # bash completion for MachO-Tools.                              -*- shell-script -*-
 #
-# Installs completion for all six binaries from this one file:
+# Installs completion for all eight binaries from this one file:
 #
 #     . /path/to/completions/macho.bash          # from your .bashrc
 #
 # A package-manager install should instead drop this at
 # $PREFIX/share/bash-completion/completions/macho, which bash loads
 # automatically; the `macho` name is chosen so the file is found by that
-# convention rather than needing to know all six command names.
+# convention rather than needing to know all eight command names.
 #
 # Every tool here is dependency-free and runs on Linux and Windows as well as
 # macOS, so completion never assumes `otool` or `lipo` exist.
@@ -22,6 +22,8 @@ _macho_opts_for() {
         findcall)     echo "--json -h --help --list --include-data --arch -b --binary" ;;
         findliteral)  echo "--json -h --help --text -b --binary" ;;
         mapliteral)   echo "--json -h --help -b --binary" ;;
+        a2o)          echo "--json -h --help --arch -b --binary" ;;
+        o2a)          echo "--json -h --help --arch -b --binary" ;;
         *)            echo "" ;;
     esac
 }
@@ -50,8 +52,8 @@ _macho_complete() {
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-    # Keyed by the name with `macho-` removed: `_macho_opts_for` lists the six
-    # command names, and passing the prefixed form matches no case and silently
+    # Keyed by the name with `macho-` removed: `_macho_opts_for` lists every
+    # command name, and passing the prefixed form matches no case and silently
     # completes nothing — a completion that always returns empty looks identical
     # to one that has no candidates, which is why this is worth a test.
     opts="$(_macho_opts_for "$name")"
@@ -76,18 +78,34 @@ _macho_complete() {
         return 0
     fi
 
-    # Otherwise a path. The first positional is a pattern for sym,
-    # symlookup, findcall, findliteral and mapliteral, so a path is only correct
-    # once those are filled; completefull handles the common case of one
-    # pattern and one path without trying to know which position we are in.
+    # Otherwise a path. The first positional is a query — a pattern for sym, an
+    # address for symlookup, a2o and o2a, a call target for findcall, a byte
+    # literal for findliteral and mapliteral — so a path is only correct once
+    # those are filled. `_macho_targets` handles the common case of one query and
+    # one path without trying to know which position we are in.
     _macho_targets
 }
 
 for _macho_cmd in macho-describe macho-sym macho-symlookup macho-findcall \
-                  macho-findliteral macho-mapliteral; do
+                  macho-findliteral macho-mapliteral macho-a2o macho-o2a; do
     complete -F _macho_complete "$_macho_cmd"
 done
 unset _macho_cmd
+
+# macho-mcp gets its own function rather than the shared one: it takes no
+# arguments, and reusing `_macho_complete` would offer it a Mach-O path to
+# read, which is not a thing it can do. What is useful is saying so, since the
+# usual reason to type it by hand is a client failing to launch it.
+_macho_mcp_complete() {
+    local cur="${COMP_WORDS[COMP_CWORD]}"
+    if [[ "$cur" == -* ]]; then
+        COMPREPLY=($(compgen -W '--help --version' -- "$cur"))
+    else
+        COMPREPLY=($(compgen -f -- "$cur"))
+    fi
+    return 0
+}
+complete -F _macho_mcp_complete macho-mcp
 
 # Sourced rather than executed: `complete` and `compgen` only exist inside an
 # interactive bash, and running this file as a script would exit on the first of
