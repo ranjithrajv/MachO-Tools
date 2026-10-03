@@ -1,11 +1,11 @@
 # Agent Skills
 
-This directory holds [Agent Skills](https://agentskills.io) for `MachO-Tools` —
+This directory holds [Agent Skills](https://agentskills.io) for `MachO-explorer` —
 portable instruction sets that teach a coding agent how to use this package.
 
 | Skill | For |
 |---|---|
-| [`macho-tools/SKILL.md`](macho-tools/SKILL.md) | Reading Mach-O binaries: slices, symbols, addresses, call sites, literal triage |
+| [`macho-explorer/SKILL.md`](macho-explorer/SKILL.md) | Reading Mach-O binaries: slices, symbols, addresses, call sites, literal triage |
 
 The format is an open standard, so the same directory works with Claude Code,
 Codex, Cursor, VS Code, Copilot, Gemini CLI, Goose, OpenCode and the rest —
@@ -14,10 +14,10 @@ into wherever your agent looks for skills:
 
 ```sh
 # Claude Code, per project
-mkdir -p .claude/skills && cp -r skill/macho-tools .claude/skills/
+mkdir -p .claude/skills && cp -r skill/macho-explorer .claude/skills/
 
 # or for every project
-mkdir -p ~/.claude/skills && cp -r skill/macho-tools ~/.claude/skills/
+mkdir -p ~/.claude/skills && cp -r skill/macho-explorer ~/.claude/skills/
 ```
 
 ## Why a skill and not only the MCP server

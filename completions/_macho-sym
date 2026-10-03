@@ -3,7 +3,7 @@
 # zsh completion for macho-sym. Install as _macho-sym in a directory on your
 # $fpath, or copy to ${fpath[1]}/_macho-sym.
 #
-# MachO-Tools 0.1.0.
+# MachO-explorer 0.1.0.
 
 _macho_arches=(x86_64 arm64)
 

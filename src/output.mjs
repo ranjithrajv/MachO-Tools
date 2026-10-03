@@ -39,12 +39,18 @@
 /**
  * Envelope keys every tool emits, so consumers can rely on the shape.
  *
- * Eight tools, and `sym` is one of them rather than the two it replaced: the
+ * Nine tools, and `sym` is one of them rather than the two it replaced: the
  * `symgrep`/`symfind` pair went away with the merge rather than being kept as
  * aliases, so neither name can appear here any more.
+ *
+ * The list is the suite's roster: `smoke.mjs` walks it to check that every tool
+ * answers `--help`, and refuses unknown flags, on the reasoning that a tool whose
+ * one universally-required flag reports a usage error is the wrong shape for the
+ * first thing anyone runs. A tool that exists but is not on this list gets none
+ * of that, so being added here is part of being added at all.
  */
 export const TOOLS = [
-  'describe', 'sym', 'symlookup', 'findcall', 'findliteral', 'mapliteral', 'a2o', 'o2a',
+  'describe', 'sym', 'symlookup', 'findcall', 'findliteral', 'mapliteral', 'a2o', 'o2a', 'disasm',
 ];
 
 /**
@@ -62,8 +68,13 @@ export const TOOLS = [
  * "addresses must be hex: got /bin/ls". A usage error naming the wrong problem
  * is worse than no usage error, because it sends the reader looking in the
  * wrong place.
+ *
+ * `count` and `bytes` are here for the same reason as `max`: they take a
+ * number, and a number in the wrong slot reads as a perfectly plausible address
+ * or path. Keeping the list here rather than per-tool is what makes that a
+ * single edit instead of one per tool that later grows a numeric flag.
  */
-export const VALUE_FLAGS = new Set(['b', 'binary', 'arch', 'max', 'include']);
+export const VALUE_FLAGS = new Set(['b', 'binary', 'arch', 'max', 'include', 'count', 'bytes']);
 
 /**
  * Flags every tool accepts, whatever else it does.

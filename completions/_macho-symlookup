@@ -3,7 +3,7 @@
 # zsh completion for macho-symlookup. Install as _macho-symlookup in a directory
 # on your $fpath.
 #
-# MachO-Tools 0.1.0.
+# MachO-explorer 0.1.0.
 
 _macho_symlookup() {
     _arguments -s -S \

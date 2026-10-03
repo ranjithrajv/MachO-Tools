@@ -3,7 +3,7 @@
 # zsh completion for macho-findcall. Install as _macho-findcall in a directory
 # on your $fpath.
 #
-# MachO-Tools 0.1.0.
+# MachO-explorer 0.1.0.
 
 _macho_findcall() {
     local -a state

@@ -3,10 +3,10 @@
  * Can this package actually be published, and does it say what it publishes?
  *
  * `npm publish --dry-run` is the command that looks like this check and is not
- * one. It packs the tarball, prints `+ MachO-Tools@0.1.0` and exits 0 — on a name
+ * one. It packs the tarball, prints `+ MachO-explorer@0.1.0` and exits 0 — on a name
  * npm refuses outright:
  *
- *     npm error 404 'MachO-Tools@*' is not in this registry.
+ *     npm error 404 'MachO-explorer@*' is not in this registry.
  *     npm error 404 This package name is not valid, because
  *     npm error 404 1. name can no longer contain capital letters
  *
@@ -52,7 +52,7 @@ const rejectsCapitals = (n) => n !== n.toLowerCase();
 // `macho_tools` is deliberately absent from this list: `_` is already illegal in
 // an npm name, so a predicate that rejected it would be testing a second rule
 // and could fail while the rule it exists for still works.
-const control = rejectsCapitals('MachO-Tools') && !rejectsCapitals('macho-tools') && rejectsCapitals('MachOTools');
+const control = rejectsCapitals('MachO-Explorer') && !rejectsCapitals('macho-explorer') && rejectsCapitals('MachOTools');
 if (!control) {
   bad('the capital-letter predicate no longer discriminates, so it cannot be trusted');
 } else {
@@ -88,7 +88,7 @@ if (!name) {
 // the line or matched nothing at all, which is why the control below exists.
 const SPECIFIER = /npm (?:i|install)(?:[ \t]+-{1,2}[\w-]+)*[ \t]+(['"]?)([@a-z0-9][\w./-]*)\1/g;
 
-const docs = ['README.md', 'CONTRIBUTING.md', 'skill/README.md', 'skill/macho-tools/SKILL.md']
+const docs = ['README.md', 'CONTRIBUTING.md', 'skill/README.md', 'skill/macho-explorer/SKILL.md']
   .filter((f) => fs.existsSync(path.join(root, f)));
 
 let seen = 0;
@@ -96,7 +96,7 @@ for (const doc of docs) {
   const text = read(doc);
   for (const m of text.matchAll(SPECIFIER)) {
     seen++;
-    // Skip versioned specifiers (`macho-tools@1.2.3`) and anything scoped.
+    // Skip versioned specifiers (`macho-explorer@1.2.3`) and anything scoped.
     const named = m[2].replace(/@[^@/]*$/, '');
     if (named === name) {
       ok(`${doc} installs "${named}", matching package.json`);

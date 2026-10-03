@@ -1,6 +1,6 @@
-# bash completion for MachO-Tools.                              -*- shell-script -*-
+# bash completion for MachO-explorer.                           -*- shell-script -*-
 #
-# Installs completion for all eight binaries from this one file:
+# Installs completion for all nine binaries from this one file:
 #
 #     . /path/to/completions/macho.bash          # from your .bashrc
 #
@@ -24,6 +24,7 @@ _macho_opts_for() {
         mapliteral)   echo "--json -h --help -b --binary" ;;
         a2o)          echo "--json -h --help --arch -b --binary" ;;
         o2a)          echo "--json -h --help --arch -b --binary" ;;
+        disasm)       echo "--json -h --help --branches --count --bytes --arch -b --binary" ;;
         *)            echo "" ;;
     esac
 }
@@ -63,6 +64,11 @@ _macho_complete() {
         -b|--binary) _macho_targets; return 0 ;;
         --arch)      COMPREPLY=( $(compgen -W "$_macho_arches" -- "$cur") ); return 0 ;;
         --arch=*)    COMPREPLY=( $(compgen -W "$_macho_arches" -- "${cur#*=}") ); return 0 ;;
+        # `disasm` is the only tool with a positional that is neither a query nor
+        # a path, so its count can be a bare number with no flag in front of it.
+        --count|--bytes)
+            COMPREPLY=( $(compgen -W '0 1 8 16 32 64 128 256 512 1024 4096' -- "$cur") )
+            return 0 ;;
     esac
 
     if [[ "$cur" == --arch=* ]]; then
@@ -87,7 +93,8 @@ _macho_complete() {
 }
 
 for _macho_cmd in macho-describe macho-sym macho-symlookup macho-findcall \
-                  macho-findliteral macho-mapliteral macho-a2o macho-o2a; do
+                  macho-findliteral macho-mapliteral macho-a2o macho-o2a \
+                  macho-disasm; do
     complete -F _macho_complete "$_macho_cmd"
 done
 unset _macho_cmd

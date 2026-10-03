@@ -1,0 +1,25 @@
+#compdef macho-disasm
+#
+# zsh completion for macho-disasm. Install as _macho-disasm in a directory
+# on your $fpath.
+#
+# MachO-explorer 0.1.0.
+
+_macho_disasm() {
+    _arguments -s -S \
+        '--branches[report only branches, as resolved edges]' \
+        '--count=[stop after this many instructions (0 = no cap)]:count: ' \
+        '--bytes=[decode this many bytes instead of a count]:bytes: ' \
+        '--arch=[prefer an architecture]:architecture:(arm64 arm64e x86_64)' \
+        '(-b --binary)'{-b,--binary}'[the binary or bundle to read]:Mach-O file or bundle:_files' \
+        '--json[write one JSON object to stdout]' \
+        '(-h --help)'{-h,--help}'[show usage]' \
+        '*:hexadecimal address (with 0x, optional) or Mach-O file:_files'
+
+    # `--branches` with no address sweeps the whole section, which on a large
+    # binary is millions of records. Offering the bounded form here rather than
+    # the bare one is a nudge, not a constraint: the flags stay accepted.
+    _values 'range' 'n' 0 1 8 16 32 64 128 256 512 1024 4096
+}
+
+_macho_disasm "$@"

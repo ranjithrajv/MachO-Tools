@@ -1,5 +1,5 @@
 /**
- * Type declarations for MachO-Tools.
+ * Type declarations for MachO-explorer.
  *
  * Hand-written rather than generated, and deliberately small.
  *
@@ -830,3 +830,132 @@ export declare function searchRange(f: Opener, needle: Buffer, from: number, to:
 
 /** Printable context around an absolute file offset. */
 export declare function contextAround(f: Opener, off: number, preLen?: number, hitLen?: number): Context;
+
+/* ================================================================== *
+ * Instruction decoding
+ *
+ * Boundaries and direct branch edges. Not mnemonics and not operands — see
+ * the note on each declaration below, because "disassemble" here means narrower
+ * than the word usually does.
+ * ================================================================== */
+
+/** One decoded instruction, as a sweep reports it. */
+export interface Instruction {
+  /** Virtual address of the first byte. */
+  addr: Vaddr;
+  /** The instruction's bytes. Shorter than `length` when the record was clipped
+   *  at the end of the requested range. */
+  bytes: Buffer;
+  /** Full decoded length, even where `bytes` is clipped. */
+  length: number;
+  /**
+   * Branch family — `CALL`, `JMP`, `Jcc`, `LOOP`, `JRCXZ` on x86_64; `BL`,
+   * `B`, `B.cond`, `CBZ`, `CBNZ`, `TBZ`, `TBNZ`, `ADR`, `ADRP` on arm64 — or
+   * `null` for an instruction that does not branch.
+   */
+  kind: string | null;
+  /** Resolved direct branch target, or `null`. `ADR` and `ADRP` are reported as
+   *  branches but are not PC-relative, so a `BL` from the same address does not
+   *  generally land here. */
+  target: Vaddr | null;
+}
+
+/** A resolved direct branch edge. */
+export interface Branch {
+  source: Vaddr;
+  target: Vaddr;
+  kind: string;
+}
+
+/**
+ * Whether this module has an instruction decoder for `arch`.
+ *
+ * `arm64`, `arm64e` and `x86_64` decode. Report rather than assume: a caller that
+ * swept an undecodable slice and got `[]` could not tell "cannot decode this
+ * architecture" from "there was nothing there", and those are different answers.
+ */
+export declare function supportedArch(arch: string): boolean;
+
+/**
+ * Length in bytes of the instruction at `offset` in `bytes`, or `null`.
+ *
+ * `null` covers three cases that a caller may want to tell apart but cannot from
+ * the return value alone: an unknown architecture, an unknown opcode, and a
+ * truncated buffer. `address` is only meaningful when a length came back.
+ *
+ * The tables are incomplete by design and list their gaps in `instruction.mjs`:
+ * 3DNow!, AMD `extrq`/`insertq`, and EVEX opcodes with an immediate are read one
+ * byte short. A short reading is the least damaging failure available — the sweep
+ * desynchronises at that instruction — because a length that is merely *too long*
+ * hides the instruction behind it.
+ */
+export declare function instructionLength(
+  arch: string,
+  bytes: Buffer,
+  offset?: number,
+): number | null;
+
+/**
+ * Resolved direct branch target of the instruction at `offset`, or `null`.
+ *
+ * `pc` is the virtual address of the first byte, because both architectures
+ * measure their displacements from there: x86_64 from the instruction's *end*,
+ * arm64 from the instruction's start.
+ *
+ * Only direct-relative forms resolve. RIP-relative operands on x86_64 and the
+ * register-indirect forms on both architectures name a target this cannot
+ * compute, and `null` is the honest answer.
+ */
+export declare function branchTarget(
+  arch: string,
+  bytes: Buffer,
+  pc: Vaddr,
+  offset?: number,
+): Branch | null;
+
+/**
+ * Sweep a code section in address order and return every instruction decoded.
+ *
+ * This is a **linear sweep**, not a recursive descent, and the distinction is the
+ * whole caveat: it decodes every byte of the range, so alignment padding and any
+ * data interleaved into the code section are read as instructions. It is a
+ * coverage tool for a range you already believe is code, not a way to find code.
+ *
+ * Measured against `/usr/lib/dyld`, 91.0% of a slice's symbols landed on an
+ * instruction boundary when the sweep began at the section start, against 100%
+ * when each sweep began at its own symbol's address. Start from a symbol.
+ *
+ * Reads are windowed rather than done in one buffer: a large `__text` is read in
+ * 64 KiB windows with a carry, so an instruction straddling a window boundary is
+ * decoded once, in the right place, rather than dropped and then re-decoded from
+ * the wrong offset.
+ */
+export declare function disassemble(
+  path: string,
+  opts?: {
+    /** Where to start, as a virtual address. Must lie in a code section of a
+     *  matching slice. Omit to start at the section's first byte — see the
+     *  linear-sweep note above before relying on that. */
+    addr?: Vaddr | null;
+    /** Architecture preference, not a filter: if absent, another slice is read. */
+    arch?: string | null;
+    /** Stop after this many instructions. `0` means no cap. Default 32. */
+    count?: number;
+    /** Decode this many bytes instead of counting instructions. `0` means no cap. */
+    bytes?: number;
+  },
+): {
+  slices: Array<{
+    arch: string;
+    offset: number;
+    section: string;
+    sectionAddr: Vaddr;
+    sectionSize: number;
+    startAddr: Vaddr;
+    instructions: Instruction[];
+    branches: Branch[];
+  }>;
+  /** Architecture names that appeared and could not be decoded. */
+  unsupported: string[];
+  notes: string[];
+};

@@ -3,7 +3,7 @@
 # zsh completion for macho-mcp. Install as _macho-mcp in a directory on your
 # $fpath.
 #
-# MachO-Tools 0.1.0.
+# MachO-explorer 0.1.0.
 #
 # There is almost nothing to complete: the server takes no arguments other than
 # --help and --version, and everything else happens over the protocol on stdin.

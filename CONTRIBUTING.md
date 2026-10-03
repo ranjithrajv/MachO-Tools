@@ -268,7 +268,7 @@ The generator is exported, because a project testing *its own* Mach-O reader
 needs a known-answer corpus at least as much as this one does:
 
 ```js
-import { buildFixtures } from 'macho-tools/fixtures';
+import { buildFixtures } from 'macho-explorer/fixtures';
 
 const { files, manifest } = await buildFixtures({ out: '/tmp/corpus' });
 // files.universal, files.arm64only, files.decoy, files.stripped, files.thin…
@@ -277,7 +277,7 @@ const { files, manifest } = await buildFixtures({ out: '/tmp/corpus' });
 ```
 
 ```sh
-node node_modules/MachO-Tools/test/fixtures.mjs --out-dir /tmp/corpus
+node node_modules/macho-explorer/test/fixtures.mjs --out-dir /tmp/corpus
 ```
 
 | Fixture | Shape it provides |

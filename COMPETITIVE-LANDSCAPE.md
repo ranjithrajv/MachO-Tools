@@ -334,9 +334,19 @@ bytes are not Mach-O", and conflating them is the human-facing version of 5.1.
    for `ipsw` instead of this. Worth knowing which side of that line you are on.
 
 8. **Do not build a disassembler, and do not build an MCP server to lead with.**
-   The first is already the project's stated decision and remains correct. The
-   second would be chasing a slot Hopper, Binary Ninja and `ipsw` occupy with
-   far more capability behind it.
+   The second is unchanged: an MCP server would be chasing a slot Hopper, Binary
+   Ninja and `ipsw` occupy with far more capability behind it. The first needs a
+   correction, because the boundary has since moved and the original wording no
+   longer says what it meant. `disasm.mjs` decodes instruction lengths and direct
+   branch edges on `arm64`, `arm64e` and `x86_64` — and it is worth being clear
+   that this *is not* a partial Hopper. It is the one piece of `ipsw`'s
+   disassembler that `ipsw` does not have (x86_64 boundaries), and it is the one
+   piece `findcall` needs to stop guessing where instructions start. Beyond that
+   line — mnemonics, operands, a control flow graph — the original reasoning is
+   untouched and still correct: those are Hopper's, Binary Ninja's and `ipsw`'s,
+   and a per-opcode table whose wrong answer is a plausible instruction rather
+   than a detectable error is the wrong thing for a reader whose whole value is
+   that its answers are facts.
 
 ---
 

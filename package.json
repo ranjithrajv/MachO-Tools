@@ -21,7 +21,7 @@
   "bugs": {
     "url": "https://github.com/ranjithrajv/MachO-Tools/issues"
   },
-  "homepage": "https://github.com/ranjithrajv/MachO-Tools#readme",
+  "homepage": "https://github.com/ranjithrajv/MachO-explorer#readme",
   "author": "ranjithrajv",
   "license": "LGPL-3.0-or-later",
   "main": "src/api.mjs",
@@ -54,6 +54,7 @@
     "man/man1/macho-mapliteral.1",
     "man/man1/macho-a2o.1",
     "man/man1/macho-o2a.1",
+    "man/man1/macho-disasm.1",
     "man/man1/macho-mcp.1"
   ],
   "bin": {
@@ -65,6 +66,7 @@
     "macho-mapliteral": "src/mapliteral.mjs",
     "macho-a2o": "src/a2o.mjs",
     "macho-o2a": "src/o2a.mjs",
+    "macho-disasm": "src/disasm.mjs",
     "macho-mcp": "src/mcp.mjs"
   },
   "scripts": {
@@ -74,8 +76,9 @@
     "test:mcp": "node test/mcp.mjs",
     "test:skill": "node test/skill.mjs",
     "test:types": "node test/types.mjs",
+    "test:disasm": "node test/disasm.mjs",
     "test:publish": "node test/publish.mjs",
-    "test:all": "npm run test:fixtures && npm test && npm run test:mcp && npm run test:skill && npm run test:publish && npm run test:mutation"
+    "test:all": "npm run test:fixtures && npm test && npm run test:disasm && npm run test:mcp && npm run test:skill && npm run test:publish && npm run test:mutation"
   },
   "engines": {
     "node": ">=22.15"

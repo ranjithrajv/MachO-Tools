@@ -86,7 +86,7 @@ const LEGACY = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 
 const SUPPORTED = [MODERN, ...LEGACY];
 
-const SERVER_NAME = 'MachO-Tools';
+const SERVER_NAME = 'MachO-explorer';
 const { version: SERVER_VERSION } = createRequire(import.meta.url)('../package.json');
 
 /* ------------------------------------------------------------------ *
@@ -212,7 +212,7 @@ async function handle(msg, state) {
     return respond(id, {
       protocolVersion: chosen,
       capabilities: CAPABILITIES,
-      serverInfo: { name: SERVER_NAME, version: SERVER_VERSION, title: 'MachO-Tools' },
+      serverInfo: { name: SERVER_NAME, version: SERVER_VERSION, title: 'MachO-explorer' },
       instructions: INSTRUCTIONS,
     });
   }

@@ -171,7 +171,7 @@ console.log('\nmcp: the protocol\n');
   );
   check(!!d?.capabilities?.tools, 'discover declares the tools capability');
   check(
-    d?._meta?.['io.modelcontextprotocol/serverInfo']?.name === 'MachO-Tools',
+    d?._meta?.['io.modelcontextprotocol/serverInfo']?.name === 'MachO-explorer',
     'discover identifies the server in _meta',
   );
   check(

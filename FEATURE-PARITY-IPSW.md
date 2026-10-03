@@ -159,8 +159,17 @@ standalone file, handles both arm64 `BL` and x86_64 `rel32`, and is explicitly
 typed by section. **`findcall` has no competitor in `ipsw` at all.**
 
 Note the converse: `ipsw macho disass` is documented "Disassemble **ARM64**
-MachO". On x86_64, MachO-Tools' `findcall` covers ground `ipsw`'s disassembler
-does not.
+MachO". On x86_64, MachO-Tools' `findcall` and `disasm` cover ground `ipsw`'s
+disassembler does not — `disasm` decodes `x86_64` instruction lengths and direct
+branch edges, which `ipsw` does not attempt at all.
+
+It is worth being precise about where `disasm` stops, because "disassembly" is a
+word covering two different amounts of work. `disasm` reports *instruction
+lengths* and *direct branch displacements* — bytes, lengths, and resolved
+`{from, to}` edges. It does not print mnemonics or operands, because those need
+per-opcode tables whose wrong answer is a plausible-looking instruction rather
+than a detectable error. `ipsw` prints mnemonics, and loses x86_64 entirely.
+Neither is a superset of the other.
 
 ### 2.4 Bytes and literals
 
@@ -291,7 +300,7 @@ means the tools are reachable, not that they are better.
 |---|:--:|:--:|
 | Capability rows won | ~46 | **9** (was 5) |
 | MachO format coverage | complete | partial |
-| Multi-arch disassembly | ARM64 | — (by design) |
+| Multi-arch disassembly | ARM64 | boundaries + edges, both arches |
 | x86_64 direct-call xrefs | ❌ | ✅ |
 | Byte-literal → pointer analysis | ❌ | ✅ |
 | vaddr ⇄ file offset | ✅ no JSON | ✅ **JSON + zerofill + ambiguity** |
@@ -570,10 +579,11 @@ MachO-Tools is a better choice than `ipsw`: nothing to install, one file to
 read, and a machine contract `ipsw` does not have — the same contract whether
 the caller arrived by pipe or by MCP. If a user needs to know anything *else* —
 code signing, entitlements, chained fixups, export tries, Objective-C or Swift
-metadata, a disassembly, a firmware image, a directory of binaries, or the
-literal's callers in a shared cache — `ipsw` answers it and MachO-Tools does not.
-The load-command *listing* is now closed; the load-command *interpretation* is
-not, and is not planned to be.
+metadata, mnemonics and operands, a firmware image, a directory of binaries, or
+the literal's callers in a shared cache — `ipsw` answers it and MachO-Tools does
+not. The load-command *listing* is now closed; the load-command *interpretation*
+is not, and is not planned to be. Nor is mnemonic decoding: `disasm` closes the
+boundary question, and the line past that one is Hopper's.
 
 Three things MachO-Tools is now alone on, and all three are the same idea
 applied at different depths: **direct call xrefs in a standalone file**, with no

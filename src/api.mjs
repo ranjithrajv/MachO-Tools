@@ -1371,3 +1371,24 @@ export function contextAround(f, off, preLen = 16, hitLen = 8) {
 }
 
 export { isMachOFile, sliceName, sliceArchName, textSection, codeSections };
+
+/**
+ * Instruction decoding, re-exported from `instruction.mjs`.
+ *
+ * Exported rather than left behind a CLI because the question these answer —
+ * "how long is the instruction at this address, and where does it branch" — is
+ * the same *kind* of question as `addressToOffset` and `findCalls`, and a caller
+ * holding a buffer should not have to spawn a process to get the answer.
+ *
+ * What they deliberately do not do is decode *operands* or print mnemonics. They
+ * answer "where are the boundaries, and where do the direct edges go", which is a
+ * fact about the byte stream; anything past that is a claim about what the program
+ * does. The sweep's limits and the opcode table's documented gaps carry over
+ * unchanged.
+ */
+export {
+  disassemble,
+  instructionLength,
+  branchTarget,
+  supportedArch,
+} from './instruction.mjs';

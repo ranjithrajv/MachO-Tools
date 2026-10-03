@@ -125,7 +125,7 @@ for (const name of SKILLS) {
     if (!fs.existsSync(p)) continue;
     const body = fs.readFileSync(p, 'utf8');
     for (const m of body.matchAll(/\bmacho-[a-z0-9]+/g)) {
-      if (!/macho-tools/.test(m[0])) referenced.add(m[0]);
+      if (!/macho-explorer/.test(m[0])) referenced.add(m[0]);
     }
   }
   const unknown = [...referenced].filter((c) => !BINS.includes(c));

@@ -1,6 +1,6 @@
 {
   "$comment": [
-    "Shipped defaults for macho-tools. Every value here is a site-specific fact",
+    "Shipped defaults for macho-explorer. Every value here is a site-specific fact",
     "rather than a property of the Mach-O format, which is why it is data.",
     "Override wholesale by setting MACHO_CONFIG=/path/to/your.json."
   ],

@@ -1,13 +1,13 @@
 ---
-name: macho-tools
-description: Reads Apple Mach-O binaries without otool, nm or a disassembler. Answers what is in a binary, which function contains an address, what directly calls a given address, where a byte literal or file-format magic lives in the file, and which code points at it. Works on macOS, Linux and Windows, including universal binaries and stripped ones. Use when inspecting a Mach-O, a .app bundle, an iOS binary, a dylib, a Go/Rust/Swift/ObjC executable, or when handed a crash-log address, a "what is this binary" question, or a magic number to trace back to its handler — even when MachO-Tools is not named.
+name: macho-explorer
+description: Reads Apple Mach-O binaries without otool, nm or a disassembler. Answers what is in a binary, which function contains an address, what directly calls a given address, where a byte literal or file-format magic lives in the file, and which code points at it. Works on macOS, Linux and Windows, including universal binaries and stripped ones. Use when inspecting a Mach-O, a .app bundle, an iOS binary, a dylib, a Go/Rust/Swift/ObjC executable, or when handed a crash-log address, a "what is this binary" question, or a magic number to trace back to its handler — even when MachO-explorer/MachO-explorer is not named.
 license: LGPL-3.0-or-later
 metadata:
   version: "1.0.0"
-  macho-tools-version: "0.1.0"
+  macho-explorer-version: "0.1.0"
 ---
 
-# MachO-Tools
+# MachO-explorer
 
 Mach-O introspection in pure JavaScript. No dependencies, no build step, no
 install: Node ≥ 22.15 and either the CLI or an MCP server.
@@ -116,13 +116,14 @@ macho-findliteral LZ4 "/path/to/Some App.app"
 macho-mapliteral  LZ4 /path/to/binary
 macho-a2o         0x100085c30 -b /path/to/binary     # address  → file offset
 macho-o2a         0x85c30 -b /path/to/binary          # file offset → address
+macho-disasm      0x100085c30 /path/to/binary         # where instructions start, and where they branch
 ```
 
 **3. The library**, when you are writing code:
 
 ```js
 import { describe, searchSymbols, lookupAddress, findCalls,
-         listCallTargets, findLiteral, mapLiteral } from 'macho-tools';
+         listCallTargets, findLiteral, mapLiteral } from 'macho-explorer';
 ```
 
 From a checkout with nothing installed, `node src/describe.mjs <binary>` works —
@@ -190,12 +191,21 @@ to exist, that is why — it is not a broken install. Use a real binary instead.
 
 ## What it will not do, so you do not have to try
 
-No disassembly, no decompilation. No indirect or PLT call resolution. No dSYM or
+No decompilation, no mnemonics, no operand decoding, no control flow graph. No
+indirect or PLT call resolution. No dSYM or
 DWARF. No code signature, entitlements, chained fixups, export tries, or
 Objective-C and Swift metadata — `describe --loads` *names* those load commands
 but does not interpret them. Not ELF, not PE. **Little-endian only** — big-endian
 Mach-O (NeXTSTEP on m68k/SPARC, classic Mac OS on PowerPC) is refused as
 `unknown-encoding`; a `ppc` slice is named and reported `readable: false`.
+
+`macho-disasm` does decode instruction lengths and resolve **direct** branches
+(`x86_64` for `x86_64`, and `BL`/`B`/`B.cond`/`CBZ`/`CBNZ`/`TBZ`/`TBNZ`/`ADR`/`ADRP`
+for `arm64`/`arm64e`) — that is what it is for, and it is not a disassembler:
+instructions come back as bytes, not as text. Read it as a linear sweep from a
+*known-good* address such as a symbol. Sweeping a whole code section decodes
+interleaved jump tables and string literals as instructions, and on `x86_64` one
+wrong length shifts every boundary after it.
 
 All twelve `MH_*` filetypes are named, but only the loaded-image ones
 (`MH_EXECUTE`, `MH_DYLIB`, `MH_BUNDLE`, `MH_DYLINKER`, `MH_KEXT_BUNDLE`, …)
@@ -219,7 +229,9 @@ encrypted — which is the one thing that makes a zero result from
 
 When you need to know what the code *does* rather than where it is, use Ghidra
 (free, no licence server) or Hopper. That is the intended division: this produces
-the shortlist of addresses worth opening, and hands them over.
+the shortlist of addresses worth opening, and hands them over — `macho-disasm`
+narrows that shortlist to instruction boundaries and direct branch edges, which is
+the last step before a real disassembler takes over.
 
 ## Scripting notes
 

@@ -1,0 +1,261 @@
+.TH MACHO\-DISASM 1 "October 4, 2026" "MachO-explorer 0.1.0" "User Commands"
+.SH NAME
+macho\-disasm \- decode instruction lengths and direct branch targets
+.SH SYNOPSIS
+.B macho\-disasm
+.RI [ hex-addr ]
+.RI [ binary | bundle ]
+.RI [ count ]
+.RB [ \-\-branches ]
+.RB [ \-\-json ]
+.RB [ \-\-arch= name ]
+.RB [ \-b | \-\-binary
+.IR path ]
+.RB [ \-h | \-\-help ]
+.SH DESCRIPTION
+Decodes instructions from an address to the end of the code section, reporting
+where each one starts, how long it is, and where it branches to. With
+.B \-\-branches
+it reports only the branches, as resolved
+.RI { from , to }
+edges.
+.PP
+This is what
+.BR macho\-findcall (1)
+cannot do on its own.
+.B macho\-findcall
+finds the five bytes
+.B e8 xx xx xx xx
+and reports them as call sites, but the same five bytes occur inside longer
+instructions and inside data, so it has no way to know that a given one *begins*
+an instruction. Its output is a shortlist of places worth looking at, and it says
+so. This tool knows where instructions start and end, which is what turns that
+shortlist into edges.
+.PP
+With no address, the decode starts at the beginning of the first code section.
+That start is trustworthy only in the sense that it is a section boundary, so
+prefer a symbol address when one is available:
+.PP
+.RS
+.nf
+macho\-symlookup 0x100085c30 \-b /usr/local/go/bin/go
+macho\-disasm 0x100085c30 /usr/local/go/bin/go
+.fi
+.RE
+.SH WHAT THIS IS NOT
+No mnemonics, no operand decoding, no control flow graph, no decompilation.
+Instructions are reported as bytes plus, where applicable, a branch target and a
+branch kind. The boundary is between knowing where instruction boundaries fall
+and knowing what the program does, and this stays on the near side of it.
+.PP
+Only
+.B direct\-relative
+branches are resolved.
+.I x86_64
+reports
+.BR CALL ,
+.BR JMP ,
+.BR Jcc ,
+.B LOOP
+and
+.BR JRCXZ .
+RIP\-relative operands such as
+.B call qword ptr [rip+disp32]
+are deliberately
+.I not
+reported as branches: the displacement addresses a pointer, not code, and
+treating it as a branch displacement fabricates a target roughly 2<sup>32</sup>
+bytes away. Locating those is
+.BR macho\-mapliteral (1)'s
+job.
+.PP
+.BR arm64 / arm64e
+report
+.BR BL ,
+.BR B ,
+.BR B.cond ,
+.BR CBZ ,
+.BR CBNZ ,
+.BR TBZ ,
+.BR TBNZ ,
+.B ADRP
+and
+.BR ADR .
+Note that
+.B ADRP
+is page\-relative and
+.B ADR
+is not scaled, so neither is "pc plus a displacement" in the way
+.B BL
+is.
+.SH SWEEPING IS NOT DISCOVERY
+The decode is a
+.I linear sweep
+in address order, not a recursive descent. It decodes every byte of the range, so
+alignment padding and any data interleaved in the code section are decoded as
+instructions too. The summary line reports how many bytes were covered and how
+many instructions that produced, so a region with a poor instruction\-per\-byte
+ratio is visible rather than something to be guessed at.
+.PP
+The warning applies with much more force to
+.I x86_64
+than to
+.IR arm64 .
+ARM64 instructions are all four bytes, so boundaries cannot drift. An
+.I x86_64
+length\-decoding mistake shifts every boundary after it, and
+.B src/instruction.mjs
+documents the known gaps in its opcode table:
+.BR 3DNow! ,
+AMD
+.BR extrq / insertq ,
+EVEX opcodes that take an immediate, and APX. All of those are
+.I short
+readings, so the damage is a sweep that desynchronises at that instruction, never
+a fabricated address.
+.PP
+Sweeping a whole
+.B __text
+from its start was measured against
+.BR /usr/lib/dyld :
+91.0% of the section's symbols landed on an instruction boundary when the sweep
+began at the section start, against 100% when each sweep began at its own
+symbol's address. That gap is the difference between a coverage report and a
+decoding.
+.SH OPTIONS
+.TP
+.B \-\-branches
+Report only branches, as resolved edges. The byte column is dropped, because an
+edge is the thing asked for.
+.TP
+.BI \-\-count= n
+Stop after
+.I n
+instructions. Default 32.
+.B 0
+means no cap, which is only meaningful together with
+.BR \-\-bytes ;
+decoding a whole code section of a large binary is millions of records, and
+offering that by accident would be a footgun wearing a useful feature's clothes.
+Must be a non\-negative integer.
+.TP
+.BI \-\-bytes= n
+Decode
+.I n
+bytes rather than a count of instructions. With
+.B \-\-bytes
+and no
+.BR \-\-count ,
+a range can be given exactly.
+.TP
+.BI \-\-arch= name
+Read one architecture by name:
+.BR arm64 ,
+.BR arm64e ,
+or
+.BR x86_64 .
+As elsewhere in this package the value is a preference, not a requirement: if
+that slice is absent another is read and a note says which.
+.TP
+.BR \-b ", " \-\-binary " " \fIpath\fR
+The binary to read.
+.TP
+.B \-\-json
+Write one JSON object to standard output and send all prose to standard error.
+Addresses are rendered as
+.B "0x..."
+strings: a 64\-bit virtual address does not survive a JSON number.
+.TP
+.B \-h ", " \-\-help
+Print usage and exit 0.
+.SH ARCHITECTURES
+.BR arm64 ,
+.BR arm64e " and " x86_64
+are decoded. Any other architecture is reported as
+.B unknown\-encoding
+and exits 3 rather than returning an empty result, because "this binary's
+instructions are not decoded here" and "there is nothing at that address" are
+different answers and a caller needs to be able to tell them apart.
+.SH ENVIRONMENT
+.TP
+.B MACHO_BINARY
+The binary to read when none is given.
+.TP
+.B MACHO_APP
+An application bundle to read, tried after
+.BR MACHO_BINARY .
+.TP
+.B MACHO_CONFIG
+Path to a replacement
+.IR config.json .
+.SH EXIT STATUS
+.TP
+.B 0
+At least one instruction was decoded.
+.TP
+.B 1
+The tool ran and nothing was decoded at the address \- for instance it lies in a
+data section, or in no section at all. A negative result, not a failure.
+.TP
+.B 2
+Usage error, including an unknown flag or a non\-numeric count.
+.TP
+.B 3
+The file could not be read or parsed, or the slice has no instruction decoder.
+.SH EXAMPLES
+.PP
+Where do instructions start at this address, and where do they go?
+.PP
+.RS
+.nf
+macho\-disasm 0x100085c30 /usr/local/go/bin/go
+.fi
+.RE
+.PP
+Every direct branch in the next 4 KiB, as edges:
+.PP
+.RS
+.nf
+macho\-disasm \-\-branches \-\-bytes=4096 \-\-count=0 \-b /usr/local/go/bin/go
+.fi
+.RE
+.PP
+What
+.B macho\-findcall
+found, resolved to real instruction boundaries:
+.PP
+.RS
+.nf
+macho\-disasm \-\-json 0x100085c30 64 /usr/local/go/bin/go \
+  | jq -r '.data.instructions[] | select(.kind) | "\(.addr) \(.kind) \(.target)"'
+.fi
+.RE
+.PP
+.A "On Apple Silicon, read the arm64 slice explicitly:"
+.PP
+.RS
+.nf
+macho\-disasm \-\-arch=arm64 \-\-count=16 /usr/local/go/bin/go
+.fi
+.RE
+.SH NOTES
+Positional order is
+.RI [ hex-addr ]
+.RI [ binary | bundle ]
+.RI [ count ].
+The address is recognised by its
+.B 0x
+prefix and is optional; the count is a bare integer, and anything else in that
+slot is the binary. A count is never a path, so the two cannot be confused.
+.PP
+A decoded instruction that runs past the end of the requested range is reported
+with its full length and clipped, rather than silently dropped \- so the record
+count still adds up to what was asked for.
+.SH SEE ALSO
+.BR macho\-findcall (1),
+.BR macho\-mapliteral (1),
+.BR macho\-symlookup (1),
+.BR macho\-describe (1),
+.BR otool (1),
+.BR objdump (1),
+.BR nm (1)

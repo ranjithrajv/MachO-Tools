@@ -76,6 +76,15 @@ jobs:
         run: node test/fixtures.mjs
       - name: Run the suite
         run: node test/smoke.mjs
+      # The instruction-length tables, in their own suite because the risk they
+      # carry is different in kind: a wrong length is always a plausible number,
+      # so nothing about the output reveals it and only a table of expectations
+      # can. `disasm.mjs` also holds the `__stubs` stride oracle, which reads host
+      # binaries and therefore skips on Linux and Windows — the fixture half of
+      # the same file is what runs there, which is the reason it is worth running
+      # in all three places rather than on macOS alone.
+      - name: The instruction decoders
+        run: node test/disasm.mjs
 
   # The MCP server and the skill are separate suites because they check
   # different things and neither is a subset of `smoke.mjs`.
@@ -108,7 +117,7 @@ jobs:
       #
       # `publish.mjs` asserts the package can actually be shipped and that the
       # docs name it. `npm publish --dry-run` cannot: it packed this package,
-      # printed `+ MachO-Tools@0.1.0` and exited 0 on a name npm refuses,
+      # printed `+ MachO-explorer@0.1.0` and exited 0 on a name npm refuses,
       # because a dry run does not ask the registry whether a name is
       # acceptable. So the one command that looks like the check reported success
       # on the one thing that was broken.

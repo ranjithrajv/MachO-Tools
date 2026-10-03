@@ -1,6 +1,6 @@
-# MachO-Tools
+# MachO-explorer
 
-[![test](https://github.com/ranjithrajv/MachO-Tools/actions/workflows/test.yml/badge.svg)](https://github.com/ranjithrajv/MachO-Tools/actions/workflows/test.yml)
+[![test](https://github.com/ranjithrajv/MachO-explorer/actions/workflows/test.yml/badge.svg)](https://github.com/ranjithrajv/MachO-explorer/actions/workflows/test.yml)
 
 Mach-O binary introspection for **macOS, iOS, iPadOS, tvOS, watchOS and
 visionOS** binaries — thin or universal, 32-bit or 64-bit, `arm64`, `arm64e`,
@@ -12,7 +12,9 @@ the bytes.
 
 **Mach-O is the whole scope, chosen.** This is a tool built around one format,
 not a toolkit that happens to include one, and that focus is what pays for the
-depth. It does not disassemble, and it will not grow to.
+depth. It decodes *instruction boundaries* and *direct* branch displacements —
+lengths and edges, which are facts about the bytes — and stops there. It does not
+print mnemonics or operands, and it will not grow to.
 
 ```sh
 node src/describe.mjs /usr/local/go/bin/go       # what is in this file?
@@ -25,6 +27,7 @@ node src/findliteral.mjs LZ4 "/Applications/Some App.app"
 node src/findliteral.mjs --strings --filter=error /usr/local/go/bin/go
 node src/a2o.mjs 0x100085c30 -b /usr/local/go/bin/go
 node src/o2a.mjs 0x85c30 -b /usr/local/go/bin/go
+node src/disasm.mjs 0x100085c30 /usr/local/go/bin/go
 node src/findcall.mjs --json 0x100085c30 /usr/local/go/bin/go | jq '.count'
 ```
 
@@ -97,14 +100,16 @@ means. That is not a footnote: see
 | `mapliteral.mjs` | Map a literal to vaddrs, then find the pointers to them — which is how you find the code that handles a format |
 | `a2o.mjs` | Which byte of the file is this vaddr? Both the slice-relative and the absolute offset, and zero-fill as its own answer |
 | `o2a.mjs` | Which vaddr does this file offset have? Every slice's answer, since one offset means a different address in each |
+| `disasm.mjs` | Where do instructions start and end at this address, and where do they branch? Instruction lengths plus resolved **direct** branch edges for `arm64`, `arm64e` and `x86_64` — bytes, not mnemonics |
 
-Eight tools; there were seven until `symgrep.mjs` and `symfind.mjs` merged into
-`sym.mjs`, which now covers both conventions with `--regex` and `--all-imp`.
+Nine tools; there were seven until `symgrep.mjs` and `symfind.mjs` merged into
+`sym.mjs`, which now covers both conventions with `--regex` and `--all-imp`, and
+eight until `disasm.mjs` added the boundary decoder.
 
 ### Installing
 
 ```sh
-npm install -g macho-tools          # macho-describe, macho-sym, ...
+npm install -g macho-explorer          # macho-describe, macho-sym, ...
 man macho-sym
 ```
 
@@ -138,6 +143,8 @@ address by *looking* like one turns a typo into a confident wrong answer.
 | `--sections`, `--segments`, `--loads` | `describe`: list sections, segments, or load commands by name. The lists themselves are always in `--json` |
 | `--strings`, `--min`, `--filter` | `findliteral`: list the strings already in the binary instead of searching for one. On an encrypted binary this reports `encrypted` rather than "no strings" |
 | `--include-data` | `findcall`: widen the scan from code sections to every section |
+| `--branches` | `disasm`: report only branches, as `{from, to}` edges, with the byte column dropped |
+| `--count=<n>`, `--bytes=<n>` | `disasm`: stop after `n` instructions, or after `n` bytes. `--count 0` means no cap, and is only sensible with `--bytes` |
 | `-h`, `--help` | Print usage |
 
 **An unrecognised flag is a usage error**, exit 2, with a suggestion when the
@@ -365,7 +372,7 @@ feeds to `symlookup` — and it would be wrong on essentially every binary.
 ## When to use this, and when not to
 
 Mach-O tooling splits cleanly into two kinds of thing, and this is only one of
-them. MachO-Tools is a **reader**: facts about the file, in milliseconds, not a
+them. MachO-explorer is a **reader**: facts about the file, in milliseconds, not a
 disassembler. What it does is get you from "I have a binary and no idea what is
 in it" to "here are the four addresses worth opening in a disassembler" in about
 a second.
@@ -404,7 +411,7 @@ Reach for **something else** when:
 
 ### The comparison, concretely
 
-| | MachO-Tools | `ipsw` | MachOKit / machofile | LIEF | `nm` / `otool` | Ghidra / IDA |
+| | MachO-explorer | `ipsw` | MachOKit / machofile | LIEF | `nm` / `otool` | Ghidra / IDA |
 |---|---|---|---|---|---|---|
 | Dependencies | none | none (~40 MB binary) | none (Swift) / none (Python) | native library | none | large |
 | Build step | none | no (prebuilt) | SwiftPM / none | yes | — | no |
@@ -421,12 +428,14 @@ Reach for **something else** when:
 | Scan restricted to code sections | yes | **no** † | no | no | n/a | yes |
 | Objective-C / Swift metadata | **no** | yes | yes | partial | no | yes |
 | Code signing / fixups | **no** | yes | yes | yes | `codesign` | partial |
-| Disassembly | **no** | ARM64 only ‡ | no | no | no | yes |
+| Instruction boundaries (lengths) | yes | ARM64 only ‡ | no | no | no | yes |
+| Direct branch edges from a known address | yes | ARM64 only ‡ | no | no | no | yes |
+| Disassembly to text — mnemonics, operands, CFG | **no** | ARM64 only ‡ | no | no | no | yes |
 | JSON output | yes | partial § | manual | yes | no | yes |
 | Importable as a library | yes | yes (Go, `ipswd`) | yes | yes | no | limited |
 | Reproducible offline test gate | **yes** | no | partial | n/a | n/a | partial |
 
-The four bolded gaps in the MachO-Tools column are deliberate. They are the ones
+The four bolded gaps in the MachO-explorer column are deliberate. They are the ones
 where a general parser or a disassembler is strictly better, and closing them
 here would mean becoming one of those projects instead of this one.
 
@@ -456,7 +465,7 @@ still exists:
 
 ‡ Its disassembler is ARM64-only and says so in the source — `macho_disass.go`
 returns `can only disassemble arm64 binaries` on any other CPU — so on x86_64,
-`findcall` covers ground `ipsw` does not reach at all.
+`findcall` and `disasm` cover ground `ipsw` does not reach at all.
 
 ¶ `macho a2o` and `macho o2a` return an offset for any address, including one
 inside `__bss` — which has an address, a size, and no bytes in the file, because
@@ -481,8 +490,8 @@ much time:
 
 | Will not | Because |
 |---|---|
-| **Disassemble** | Handing off to a disassembler is the design. `findcall` output is a shortlist of sites *worth* disassembling; a built-in disassembler would make that shortlist unnecessary and this package redundant |
-| **Resolve indirect / PLT calls** | The target is not in the instruction, so producing it means decoding the stream — the disassembler again. A wrong edge here would be worse than a missing one: it would look like a call graph |
+| **Disassemble to text** | `disasm.mjs` gives instruction lengths and direct branch edges, which is the last step before a real disassembler and the only part that a byte-level reader can do without guessing. Past that — mnemonics, operands, a control flow graph — is Hopper or Ghidra's job, and duplicating it is the clearest possible way to become a worse Hopper |
+| **Resolve indirect / PLT calls** | The target is not in the instruction; it is a pointer reachable only by following the register through a stub and then through `LC_DYLD_CHAINED_FIXUPS` or a bind, and none of which is read here. A wrong edge here would be worse than a missing one: it would look like a call graph |
 | **Read dSYM / DWARF** | A different file format and a large amount of code for the minority of binaries whose symbols are in a sidecar |
 | **Parse ObjC/Swift metadata** | MachOKit does this properly and is better at it. Duplicating it is the clearest possible way to become a worse MachOKit |
 | **ELF or PE** | Mach-O is the focus, not the first of four. Depth in one format beats breadth across several |
@@ -507,14 +516,36 @@ question it was never built for is not.
   table above, and it is a refusal rather than a parse that happens to be wrong.
 - **Direct calls only.** Indirect calls, register calls and jumps through a PLT
   stub do not encode their target in the instruction, so they do not appear in
-  `findcall`. Every hit is a site *worth disassembling*, not a proven call-graph
-  edge.
-- **The x86_64 scan is typed by *section*, not by instruction.** It restricts
-  itself to sections the linker flagged as code, which removes data false
-  positives, but it will still match a byte inside a multi-byte instruction
-  rather than at an instruction boundary. Alignment is not something the file
-  format records, so this cannot be fixed without a disassembler. The arm64 path
-  steps 4 bytes at a time and does see only aligned `BL`s.
+  `findcall`, and `disasm` reports `null` for their target rather than inventing
+  one. Every `findcall` hit is a site *worth disassembling*; every `disasm` edge
+  is a displacement read out of the instruction.
+- **`findcall`'s x86_64 scan is typed by *section*, not by instruction.** It
+  restricts itself to sections the linker flagged as code, which removes data
+  false positives, but it will still match a byte inside a multi-byte instruction
+  rather than at an instruction boundary — because the bytes alone do not say
+  where instructions begin. Alignment is not something the file format records.
+  `disasm` is the answer to that limit rather than a workaround for it: given a
+  start address it knows where each instruction ends, which is exactly the fact
+  `findcall` cannot recover. The arm64 path steps 4 bytes at a time and does see
+  only aligned `BL`s.
+- **`disasm` is a linear sweep, not a recursive descent.** It decodes every byte
+  of the range in address order, so alignment padding and any data interleaved
+  into a code section are read as instructions too. It is a coverage tool for a
+  range you already believe is code — *start it at a symbol*, not at the section
+  head. Measured against `/usr/lib/dyld`, 91.0% of a slice's symbols landed on an
+  instruction boundary when the sweep began at the section start, against 100% when
+  each sweep began at its own symbol's address. On `arm64` the exposure is much
+  smaller because every instruction is 4 bytes, so a boundary cannot drift; on
+  `x86_64` one wrong length shifts every boundary after it.
+- **The x86_64 opcode tables are incomplete, and the gaps are listed.** 3DNow!,
+  AMD `extrq`/`insertq`, EVEX opcodes that take an immediate, and APX are not
+  decoded, so those instructions are read **one byte short** — a short reading
+  desynchronises the sweep at that instruction and leaves it visible, which is the
+  least damaging way to be wrong. A length that is too *long* would swallow the
+  instruction behind it and hide it, so nothing in the table guesses. RIP-relative
+  operands are deliberately not reported as branches: the displacement addresses a
+  pointer, not code, and treating it as a branch displacement fabricates a target
+  roughly 2^32 bytes away. `mapliteral` is the tool for those.
 - **Stripped binaries have no symbols** to grep. `sym` and `symlookup` report
   nothing rather than guess; `findcall` and `findliteral` read bytes rather than
   names and are unaffected. There is no dSYM support, so a shipped build with
@@ -595,7 +626,7 @@ direct calls only — plus the workflow and the fallbacks. It is plain
 Copilot and Gemini CLI by copying one directory.
 
 ```sh
-mkdir -p .claude/skills && cp -r skill/macho-tools .claude/skills/
+mkdir -p .claude/skills && cp -r skill/macho-explorer .claude/skills/
 ```
 
 Be clear-eyed about what this is: Hopper, Binary Ninja and `ipsw` all ship an MCP
@@ -605,7 +636,7 @@ every agent-driven workflow while being well suited to it. See
 [`COMPETITIVE-LANDSCAPE.md`](COMPETITIVE-LANDSCAPE.md).
 
 ```js
-import { describe, findCalls, lookupAddress, mapLiteral } from 'macho-tools';
+import { describe, findCalls, lookupAddress, mapLiteral } from 'macho-explorer';
 
 const { slices } = describe('/path/to/binary');
 const fn = lookupAddress('/path/to/binary', 0x100085c30n);
@@ -613,12 +644,12 @@ const callers = findCalls('/path/to/binary', fn.start);
 const tables = mapLiteral('/path/to/binary', 'LZ4');
 ```
 
-The specifier is `macho-tools`, exactly as `"name"` spells it in `package.json` —
+The specifier is `macho-explorer`, exactly as `"name"` spells it in `package.json` —
 package names are case-sensitive when Node resolves them.
 
 The name is lowercase because npm will not accept a capital letter in a name
 published for the first time. That was not a style choice: this package shipped
-as `MachO-Tools`, and `npm publish --dry-run` reported `+ MachO-Tools@0.1.0` and
+as `MachO-explorer`, and `npm publish --dry-run` reported `+ MachO-explorer@0.1.0` and
 exited 0 on it, because a dry run never asks the registry whether a name is
 acceptable. `npm view` returned E404 with the reason spelled out — *"name can no
 longer contain capital letters"* — and npm's own validator reported
@@ -689,7 +720,7 @@ offline, with nothing installed — no `npm install`, no fixture download, no
 network:
 
 ```sh
-git clone https://github.com/ranjithrajv/MachO-Tools && cd MachO-Tools
+git clone https://github.com/ranjithrajv/MachO-explorer && cd MachO-explorer
 
 node test/fixtures.mjs --check    #  ~0.1s   the corpus matches its generator
 node test/smoke.mjs               #  ~4s     the tools, on binaries they were not written for
@@ -757,9 +788,9 @@ This reader was written while reversing a commercial product, and it is
 published from a workspace whose disclosure for those projects lives in the
 sibling project's `NOTICE.md` — reach it from the repository root rather than by
 link here, because this package is published to npm on its own. **Nothing
-proprietary ships here**: no key material, no game data, no disassembly, no asset
-bytes, and the only inputs it ever reads are the Mach-O files a user points it
-at. That is enforced rather than reviewed — four `boundary:` checks scan `src/`,
+proprietary ships here**: no key material, no game data, no disassembly of any
+product, no asset bytes, and the only inputs it ever reads are the Mach-O files a
+user points it at. That is enforced rather than reviewed — four `boundary:` checks scan `src/`,
 `test/` and the published tarball and fail on a publisher, a title or its
 container format appearing in any of them.
 

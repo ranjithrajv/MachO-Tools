@@ -31,7 +31,7 @@
 #          mattering.
 #
 # The last two exist because `npm publish --dry-run` cannot do their job. It
-# packed this package, printed `+ MachO-Tools@0.1.0` and exited 0 on a name npm
+# packed this package, printed `+ MachO-explorer@0.1.0` and exited 0 on a name npm
 # refuses, because a dry run does not ask the registry whether a name is
 # acceptable — so the command that looks like the check reported success on the
 # one thing that was broken.
@@ -48,7 +48,7 @@ set -e
 # in the message.
 if ! command -v node >/dev/null 2>&1; then
   echo "pre-push: node is not on PATH — refusing rather than passing unchecked." >&2
-  echo "          MachO-Tools needs node >= 22.15 and installs no dependencies." >&2
+  echo "          MachO-explorer needs node >= 22.15 and installs no dependencies." >&2
   exit 1
 fi
 

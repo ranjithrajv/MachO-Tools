@@ -12,7 +12,7 @@ npm-debug.log*
 #
 # Worth ignoring because the publish path is the weakest part of this project's
 # story right now, so `npm pack` is likely to get run: `npm publish --dry-run`
-# prints `+ MachO-Tools@0.1.0` and exits 0 on a name npm will refuse, because a
+# prints `+ MachO-explorer@0.1.0` and exits 0 on a name npm will refuse, because a
 # dry run does not ask the registry whether a name is acceptable.
 *.tgz
 

@@ -1570,6 +1570,9 @@ console.log('\na2o / o2a: address and file offset');
         ['o2a.mjs', ['0x120', '-b', bin]],
         ['findliteral.mjs', ['--text', 'pop', bin]],
         ['findliteral.mjs', ['--arch=x86_64', '--strings', '--min=4', bin]],
+        ['disasm.mjs', ['--json', '0x100000120', bin, '8']],
+        ['disasm.mjs', ['--arch=x86_64', '--branches', '--count=4', bin]],
+        ['disasm.mjs', ['--bytes=32', '--count=0', '-b', bin]],
       ];
       for (const [tool, args] of invocations) {
         const r = run(tool, args);
@@ -2153,6 +2156,275 @@ for (const b of binaries) {
         proved.backN === proved.n || proved.backN > 0,
         'findcall positive control: both query modes agree',
         `--list said ${proved.n} distinct targets; querying the top one gave ${proved.backN} call sites`,
+      );
+    }
+  }
+}
+
+/* ---- disasm: instruction boundaries and resolved branch edges -------- */
+
+{
+  // The positive control for the length decoder.
+  //
+  // A length decoder that is wrong is indistinguishable from one that is right
+  // when you only look at its own output: it always returns *a* length, and the
+  // numbers it produces are plausible. So the control has to come from somewhere
+  // that did not ask it. Three independent sources are used here, in increasing
+  // order of how much they can catch:
+  //
+  //   1. The generated fixtures. `caller_a` contains a `call rel32` (x86_64) or
+  //      `BL` (arm64) to `target_fn` and nothing else, at a vaddr the generator
+  //      computed from the same arithmetic the encoder used. The symbol table
+  //      resolves both ends, so the expected target is known before the decoder
+  //      runs. This is exact, and it is on every machine.
+  //   2. `__TEXT,__stubs`, on real binaries. Every x86_64 entry is
+  //      `jmpq *disp(%rip)` — `ff 25 rel32`, exactly 6 bytes — so a correct
+  //      sweep of that section yields exactly size/6 instructions and every one
+  //      is 6 long. This needs the real system corpus, so it is a best-effort
+  //      check, but it is the only oracle here that exercises thousands of
+  //      distinct instructions rather than a handful.
+  //   3. Coverage. The sum of the decoded lengths equals the span swept, so no
+  //      byte is skipped or double-counted. Cheap, and it is the property a
+  //      desynchronising sweep fails first.
+
+  /** Decode `count` instructions at `addr` in `p`, via the JSON envelope. */
+  function decodeAt(p, addr, n, extra = []) {
+    const r = run('disasm.mjs', ['--json', '0x' + addr.toString(16), p, String(n), ...extra], { timeout: 180000 });
+    let data = null;
+    try { data = JSON.parse(r.stdout); } catch { /* reported by the caller's own check */ }
+    return { ...r, data };
+  }
+
+  // ---- 1. the generated fixtures, exactly -----------------------------
+
+  // Both architectures, because the two decoders are unrelated code: a shared
+  // bug that broke both would have to be a bug in `linearSweep` or in the Mach-O
+  // reading, which is what checks 3 and the rest of this suite cover.
+  const cases = [
+    { stem: 'populated', kind: 'CALL', len: 5, at: 'caller_a' },
+    { stem: 'populated', kind: 'JMP', len: 5, at: 'caller_b' },
+    { stem: 'thin-arm64', kind: 'BL', len: 4, at: 'caller_a' },
+    { stem: 'thin-arm64', kind: 'BL', len: 4, at: 'caller_b' },
+  ];
+
+  /**
+   * Resolve a defined symbol by name, straight from the symbol table.
+   *
+   * `symlookup` takes an address rather than a name, so it cannot answer this,
+   * and going through `describe` or `sym` would parse tool *output* — the fragile
+   * route the `facts()` comment above warns about. Reading the table is the
+   * independent path: `disasm.mjs` never looks at symbols, so when the decoder
+   * and the symbol reader agree about an address, that agreement is evidence
+   * rather than tautology.
+   */
+  function symbolAddr(p, name) {
+    const f = opener(p);
+    try {
+      for (const s of slicesOf(f)) {
+        const thin = parseThin(f, s.offset);
+        if (!thin) continue;
+        const hit = readSymbols(f, s.offset, thin).entries.find((e) => e.defined && e.name === name);
+        if (hit && typeof hit.addr === 'bigint') return hit.addr;
+      }
+      return null;
+    } finally { f.close(); }
+  }
+
+  for (const c of cases) {
+    const b = generated.find((x) => x.stem === c.stem);
+    if (!b) {
+      skip(`disasm positive control: ${c.stem}`, 'the fixture is missing — run npm run test:fixtures');
+      continue;
+    }
+
+    const siteAddr = symbolAddr(b.path, c.at);
+    const destAddr = symbolAddr(b.path, 'target_fn');
+    if (siteAddr === null || destAddr === null) {
+      check(false, `disasm positive control: ${c.stem} ${c.at} resolves`,
+        'the planted symbols are not in the table — the control cannot run');
+      continue;
+    }
+
+    const r = decodeAt(b.path, siteAddr, 1);
+    const slice = r.data?.data?.slices?.[0];
+    const insn = slice?.instructions?.[0];
+
+    check(
+      r.code === 0 && slice && insn && BigInt(insn.addr) === siteAddr,
+      `disasm positive control: ${c.stem} decodes ${c.at} at its own address`,
+      insn ? `exit ${r.code}, ${insn.bytes} (${insn.length} bytes) at 0x${BigInt(insn.addr).toString(16)}` : `exit ${r.code}, no instruction record`,
+    );
+    check(
+      insn && insn.length === c.len,
+      `disasm positive control: ${c.stem} ${c.at} is ${c.len} bytes`,
+      insn ? `${insn.length} bytes, ${insn.bytes}` : 'no instruction record',
+    );
+    check(
+      insn && insn.kind === c.kind,
+      `disasm positive control: ${c.stem} ${c.at} is a ${c.kind}`,
+      insn?.kind || 'no branch kind reported',
+    );
+    check(
+      insn && insn.target && BigInt(insn.target) === destAddr,
+      `disasm positive control: ${c.stem} ${c.at} resolves to target_fn`,
+      insn?.target ? `0x${BigInt(insn.target).toString(16)}, target_fn is 0x${destAddr.toString(16)}` : 'no target reported',
+    );
+  }
+
+  // ---- 2. `__stubs` stride, on real binaries --------------------------
+
+  // Exact and machine-independent in form, best-effort in availability. It is
+  // the only check here that runs over thousands of distinct instructions, and
+  // it is the reason a table typo in the opcode map cannot hide behind a sweep
+  // that happens to look plausible.
+  {
+    let checked = 0, bad = 0, sample = '';
+    for (const b of binaries) {
+      const f = opener(b.path);
+      try {
+        const slice = preferredSlice(f, 'x86_64');
+        if (!slice) continue;
+        const sec = slice.thin.sections.find((s) => s.sectname === '__stubs' && s.size > 0);
+        if (!sec) continue;
+        const r = decodeAt(b.path, sec.addr, 0, ['--arch=x86_64', '--bytes=' + sec.size]);
+        const got = r.data?.data?.slices?.[0]?.instructions;
+        if (!got?.length) continue;
+        checked++;
+        const uniform = got.every((i) => i.length === 6);
+        const exact = got.length === sec.size / 6;
+        if (!uniform || !exact) {
+          bad++;
+          sample = `${b.path.split('/').pop()}: ${got.length} stubs, expected ${sec.size / 6}`
+            + (uniform ? '' : ', lengths vary');
+        }
+      } finally { f.close(); }
+    }
+    if (!checked) {
+      skip('disasm: __stubs decodes as fixed-stride 6-byte stubs', 'no x86_64 __stubs section in the corpus');
+    } else {
+      check(
+        bad === 0,
+        'disasm: __stubs decodes as fixed-stride 6-byte stubs',
+        bad ? sample : `${checked} section(s), all exactly size/6 six-byte instructions`,
+      );
+    }
+  }
+
+  // ---- 3. coverage, on real binaries ----------------------------------
+
+  // Every byte of the range is claimed by exactly one instruction. A sweep that
+  // desynchronised still satisfies this, so it proves nothing about *which*
+  // boundaries are right — but it is the property that fails first when the
+  // chunking logic drops or overlaps a window, which is invisible otherwise.
+  {
+    let checked = 0, bad = 0, sample = '';
+    for (const b of binaries) {
+      const r = decodeAt(b.path, b.facts.textAddr ?? 0n, 0, ['--bytes=4096']);
+      for (const s of r.data?.data?.slices ?? []) {
+        checked++;
+        if (s.bytesCovered > s.bytesInRange) {
+          bad++;
+          sample = `${b.path.split('/').pop()} ${s.section}: covered ${s.bytesCovered} of ${s.bytesInRange}`;
+        }
+      }
+    }
+    if (!checked) {
+      skip('disasm: a sweep covers its range without overrun', 'no binary produced a sweep');
+    } else {
+      check(
+        bad === 0,
+        'disasm: a sweep covers its range without overrun',
+        bad ? sample : `${checked} sweep(s), every instruction inside the requested window`,
+      );
+    }
+  }
+
+  // ---- 4. exit codes and the envelope --------------------------------
+
+  {
+    const target = generated.find((x) => x.stem === 'populated') || binaries[0];
+
+    const unknown = run('disasm.mjs', ['--arch=ppc64', target.path, '--json']);
+    let uerr = null;
+    try { uerr = JSON.parse(unknown.stdout).errors; } catch { /* below */ }
+    check(
+      unknown.code === 3 && Array.isArray(uerr) && uerr.includes('unknown-encoding'),
+      'disasm: an architecture with no decoder is a failure, not an empty result',
+      `exit ${unknown.code}, errors ${JSON.stringify(uerr)}`,
+    );
+
+    const outside = run('disasm.mjs', ['--json', '0xdeadbeef', target.path]);
+    let oerr = null;
+    try { oerr = JSON.parse(outside.stdout).errors; } catch { /* below */ }
+    check(
+      outside.code === 1 && Array.isArray(oerr) && oerr.includes('no-code-at-address'),
+      'disasm: an address outside every code section exits 1 with a reason code',
+      `exit ${outside.code}, errors ${JSON.stringify(oerr)}`,
+    );
+
+    const typo = run('disasm.mjs', ['--json', target.path, '--brachs']);
+    check(
+      typo.code === 2,
+      'disasm: an unknown flag is a usage error',
+      `exit ${typo.code}`,
+    );
+
+    const ok = decodeAt(target.path, target.facts.textAddr ?? 0n, 4);
+    check(
+      ok.code === 0 && ok.data?.tool === 'disasm' && ok.data?.ok === true,
+      'disasm: a successful decode exits 0 with the documented envelope',
+      `exit ${ok.code}, tool ${ok.data?.tool}, ok ${ok.data?.ok}`,
+    );
+    check(
+      ok.stdout.trim().startsWith('{') && ok.stdout.trim().endsWith('}'),
+      'disasm: --json puts exactly one JSON object on stdout',
+      ok.stdout.trim().slice(0, 1) + '...' + ok.stdout.trim().slice(-1),
+    );
+    check(
+      ok.data?.data?.slices?.[0]?.instructions?.length === 4,
+      'disasm: --count is honoured',
+      `${ok.data?.data?.slices?.[0]?.instructions?.length} instruction(s) for --count 4`,
+    );
+
+    // Addresses are BigInt internally, which `JSON.stringify` throws on. The
+    // envelope has to render them as strings or every consumer crashes on parse.
+    const insn = ok.data?.data?.slices?.[0]?.instructions?.[0];
+    check(
+      insn && typeof insn.addr === 'string' && /^0x[0-9a-f]+$/.test(insn.addr),
+      'disasm: addresses are emitted as hex strings, not numbers',
+      insn ? `${typeof insn.addr} ${JSON.stringify(insn.addr)}` : 'no instruction record',
+    );
+  }
+
+  // ---- 5. the honesty of the linear sweep ----------------------------
+
+  // `populated.macho` plants the literal `FIXTURELITERAL` *inside* `__text`,
+  // because `mapliteral` needs it there. So a sweep of that section walks into a
+  // string and keeps decoding it as instructions. That is the documented
+  // behaviour, and a test that asserted otherwise would be asserting the
+  // opposite of what the tool claims.
+  {
+    const b = generated.find((x) => x.stem === 'populated');
+    if (!b) {
+      skip('disasm: data inside __text is decoded as instructions', 'the populated fixture is missing');
+    } else {
+      const literal = 'FIXTURELITERAL';
+      const textAddr = b.facts.textAddr;
+      const at = textAddr + 0x120n;
+      const r = decodeAt(b.path, at, 0, ['--bytes=' + literal.length]);
+      const insns = r.data?.data?.slices?.[0]?.instructions ?? [];
+      // Concatenated without separators, so it reads as the raw byte sequence the
+      // decoder consumed regardless of how it chopped it up. `FIXTU` is enough:
+      // `46 49 58` is REX.R, REX.WB, `pop rax`, which is exactly what a decoder
+      // that has walked into an ASCII string produces, and no hand-written
+      // fixture would have that sequence here by accident.
+      const raw = insns.map((i) => i.bytes).join('').replace(/ /g, '');
+      check(
+        raw.toLowerCase().startsWith(Buffer.from(literal, 'latin1').toString('hex').slice(0, 10)),
+        'disasm: data inside __text is decoded as instructions, as documented',
+        insns.length
+          ? `${insns.length} instruction(s) over the literal, ${raw.slice(0, 12)}... = "${Buffer.from(raw.slice(0, 6), 'hex').toString('latin1')}"`
+          : `nothing decoded at 0x${at.toString(16)}`,
       );
     }
   }

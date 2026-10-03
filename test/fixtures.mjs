@@ -1835,7 +1835,7 @@ function isMachO(p) {
  * project testing *its own* Mach-O reader can borrow the corpus rather than
  * write its own. The argument forms are the command-line ones:
  *
- *     import { buildFixtures } from 'MachO-Tools/fixtures';
+ *     import { buildFixtures } from 'macho-explorer/fixtures';
  *     await buildFixtures();                       // → test/fixtures/*.macho
  *     await buildFixtures({ out: '/tmp/corpus' }); // → somewhere of your choosing
  *     await buildFixtures({ check: true });        // verify, write nothing

@@ -46,7 +46,7 @@ set -e
 # should be the thing named.
 if ! command -v node >/dev/null 2>&1; then
   echo "pre-commit: node is not on PATH — refusing rather than passing unchecked." >&2
-  echo "            MachO-Tools needs node >= 22.15 and installs no dependencies." >&2
+  echo "            MachO-explorer needs node >= 22.15 and installs no dependencies." >&2
   exit 1
 fi
 

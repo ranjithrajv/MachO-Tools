@@ -3,7 +3,7 @@
 # zsh completion for macho-a2o. Install as _macho-a2o in a directory
 # on your $fpath.
 #
-# MachO-Tools 0.1.0.
+# MachO-explorer 0.1.0.
 
 _macho_a2o() {
     _arguments -s -S \
